@@ -1,0 +1,147 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'ADMIN' ||
+        getUserData().role == 'ADMIN'
+      );
+    }
+
+    function isProfessor() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'PROFESSOR' ||
+        getUserData().role == 'PROFESSOR'
+      );
+    }
+
+    function isStudent() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'STUDENT' ||
+        getUserData().role == 'STUDENT'
+      );
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // USERS COLLECTION
+    match /users/{userId} {
+      // Anyone authenticated can read user profiles (name, email, role, department)
+      allow read: if isAuthenticated();
+      // Only authorized admins can create or edit accounts and assign roles
+      allow write: if isAdmin();
+    }
+
+    // DEPARTMENTS COLLECTION
+    match /departments/{departmentId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // SUBJECTS COLLECTION
+    match /subjects/{subjectId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // STUDENT SUBJECTS (Enrollments)
+    match /studentSubjects/{enrollmentId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // TIMETABLES COLLECTION (Permanent Timetable)
+    match /timetables/{timetableId} {
+      // Students and professors can only read published timetables
+      allow read: if isAuthenticated();
+      // Only admin can create, modify, or publish permanent timetable
+      allow write: if isAdmin();
+    }
+
+    // CLASS SESSIONS COLLECTION (Actual dated sessions)
+    match /classSessions/{sessionId} {
+      allow read: if isAuthenticated();
+      
+      // Admin can manage any session
+      // Professor can update ONLY sessions assigned to them (instant-log reschedule, status)
+      allow update: if isAdmin() || (
+        isProfessor() && 
+        resource.data.professorId == request.auth.uid &&
+        request.resource.data.professorId == request.auth.uid &&
+        request.resource.data.timetableId == resource.data.timetableId // Cannot alter permanent linkage
+      );
+      allow create, delete: if isAdmin();
+    }
+
+    // ATTENDANCE COLLECTION
+    match /attendance/{attendanceId} {
+      // Students can view ONLY their own attendance records
+      allow read: if isAdmin() || 
+                     (isProfessor() && resource.data.professorId == request.auth.uid) ||
+                     (isStudent() && resource.data.studentId == request.auth.uid);
+
+      // STRICT PERMISSION RULE:
+      // Professor can mark/update attendance ONLY for their own assigned subject & session!
+      allow write: if isAdmin() || (
+        isProfessor() &&
+        request.resource.data.professorId == request.auth.uid &&
+        get(/databases/$(database)/documents/classSessions/$(request.resource.data.sessionId)).data.professorId == request.auth.uid
+      );
+    }
+
+    // CHANGE LOGS (Immutable Audit Records for Professor Rescheduling)
+    match /changeLogs/{changeId} {
+      allow read: if isAdmin() || (isProfessor() && resource.data.professorId == request.auth.uid);
+      // Append-only when professor reschedules their own session; cannot be deleted or modified
+      allow create: if isAdmin() || (isProfessor() && request.resource.data.professorId == request.auth.uid);
+      allow update, delete: if false; // Immutable!
+    }
+
+    // NOTIFICATIONS COLLECTION
+    match /notifications/{notificationId} {
+      // Recipients can read and update 'read' status on their own notifications
+      allow read: if isAuthenticated() && (resource.data.recipientId == request.auth.uid || isAdmin());
+      allow update: if isAuthenticated() && resource.data.recipientId == request.auth.uid &&
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      // Notifications are created by backend Cloud Functions or administrative broadcasts
+      allow create: if isAuthenticated();
+      allow delete: if isAdmin();
+    }
+
+    // DEVICE TOKENS (FCM)
+    match /deviceTokens/{tokenId} {
+      allow read, write: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+    }
+
+    // REMINDER JOBS
+    match /reminderJobs/{reminderId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // ANNOUNCEMENTS
+    match /announcements/{announcementId} {
+      allow read: if isAuthenticated();
+      allow create: if isAdmin() || (
+        isProfessor() &&
+        request.resource.data.professorId == request.auth.uid &&
+        get(/databases/$(database)/documents/subjects/$(request.resource.data.subjectId)).data.professorId == request.auth.uid
+      );
+      allow update, delete: if isAdmin() || (
+        isProfessor() && resource.data.professorId == request.auth.uid
+      );
+    }
+  }
+}

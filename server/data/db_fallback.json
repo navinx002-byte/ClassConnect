@@ -1,0 +1,56 @@
+{
+  "settings": {
+    "collegeName": "My College of Engineering & Technology",
+    "currentSemester": "Semester 1",
+    "minAttendanceThreshold": 75,
+    "warningAttendanceThreshold": 65,
+    "timezone": "Asia/Kolkata"
+  },
+  "departments": [
+    {
+      "departmentId": "dept_cse",
+      "name": "Computer Science & Engineering",
+      "code": "CSE"
+    },
+    {
+      "departmentId": "dept_ece",
+      "name": "Electronics & Communication",
+      "code": "ECE"
+    },
+    {
+      "departmentId": "dept_me",
+      "name": "Mechanical Engineering",
+      "code": "ME"
+    }
+  ],
+  "users": [
+    {
+      "userId": "user_admin_01",
+      "name": "College Administrator",
+      "email": "admin@college.edu",
+      "password": "Admin@123",
+      "role": "ADMIN",
+      "departmentId": "dept_cse",
+      "active": true,
+      "createdAt": "2026-11-02T18:11:13.017882"
+    }
+  ],
+  "subjects": [],
+  "timetables": [
+    {
+      "timetableId": "tt_main",
+      "departmentId": "dept_cse",
+      "studentGroupId": "grp_sec_a",
+      "semester": "1",
+      "weeklySchedule": [],
+      "version": 1,
+      "isPublished": false
+    }
+  ],
+  "timetableDocuments": [],
+  "classSessions": [],
+  "attendance": [],
+  "changeLogs": [],
+  "announcements": [],
+  "notifications": []
+}
