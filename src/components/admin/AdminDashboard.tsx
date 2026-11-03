@@ -174,35 +174,100 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab, onNav
     e.target.value = '';
   };
 
-  // Database Full Export
-  const handleExportDatabase = () => {
-    const jsonStr = dataService.exportDatabaseJSON();
-    const blob = new Blob([jsonStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `classconnect-database-${new Date().toISOString().split('T')[0]}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  // MongoDB Atlas Database Status State
+  const [dbStatus, setDbStatus] = useState<{
+    databaseProvider: string;
+    connectionStatus: 'Connected' | 'Disconnected' | 'Connection Error';
+    databaseName: string;
+    lastChecked: string;
+    lastError?: string | null;
+    counts: {
+      students: number;
+      professors: number;
+      studentRecords: number;
+      timetables: number;
+      attendance: number;
+      sessions: number;
+      questionPapers: number;
+      supportRequests: number;
+    };
+  }>({
+    databaseProvider: 'MongoDB Atlas',
+    connectionStatus: 'Disconnected',
+    databaseName: 'classconnect',
+    lastChecked: new Date().toLocaleTimeString(),
+    counts: {
+      students: 0,
+      professors: 0,
+      studentRecords: 0,
+      timetables: 0,
+      attendance: 0,
+      sessions: 0,
+      questionPapers: 0,
+      supportRequests: 0,
+    },
+  });
+
+  const [isCheckingDb, setIsCheckingDb] = useState(false);
+
+  const fetchDbStatus = React.useCallback(async () => {
+    setIsCheckingDb(true);
+    try {
+      const status = await dataService.getDatabaseStatus();
+      setDbStatus(status);
+    } catch {
+      // fallback
+    } finally {
+      setIsCheckingDb(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchDbStatus();
+  }, [fetchDbStatus]);
+
+  // Database Full Export via MongoDB Backend
+  const handleExportDatabase = async () => {
+    try {
+      const jsonStr = await dataService.exportDatabaseBackup();
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ClassConnect_MongoDB_Backup_${new Date().toISOString().split('T')[0]}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert('Failed to export database backup from MongoDB.');
+    }
   };
 
-  // Database Full Import
+  // Database Full Import / Restore with Confirmation & Validation
   const handleImportDatabase = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (!window.confirm('Are you sure you want to restore database records from this JSON file? Existing MongoDB collections will be updated.')) {
+      e.target.value = '';
+      return;
+    }
+
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const text = event.target?.result as string;
-      const res = dataService.importDatabaseJSON(text);
-      if (res.success) {
-        alert('Database imported successfully!');
-        window.location.reload();
-      } else {
+      if (!text) return;
+      try {
+        const res = await dataService.restoreDatabaseBackup(text);
         alert(res.message);
+        reload();
+        fetchDbStatus();
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        alert(`Restore failed: ${msg}`);
       }
     };
     reader.readAsText(file);
+    e.target.value = '';
   };
 
   // Settings State
@@ -1324,35 +1389,69 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab, onNav
 
         {/* Database & Cloud Storage Center */}
         <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-xs max-w-xl space-y-4 text-xs">
-          <div className="border-b border-gray-100 pb-3">
-            <h2 className="text-sm font-bold text-[#173D72] flex items-center gap-2">
-              <UploadCloud className="w-4 h-4 text-[#173D72]" />
-              Database & Cloud Storage Center
-            </h2>
-            <p className="text-gray-500 text-[11px] mt-0.5">
-              Manage where and how your college data is stored and backed up.
-            </p>
-          </div>
-
-          <div className="space-y-2.5">
-            <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900">
-              <div className="font-bold flex items-center gap-1.5">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                Browser Local Storage (Active)
-              </div>
-              <p className="text-[11px] text-emerald-700 mt-1">
-                All departments, users, timetables, and attendance are currently persisted locally on this device. Data remains intact even after closing the browser or restarting.
+          <div className="border-b border-gray-100 pb-3 flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-bold text-[#173D72] flex items-center gap-2">
+                <UploadCloud className="w-4 h-4 text-[#173D72]" />
+                Database & Cloud Storage Center
+              </h2>
+              <p className="text-gray-500 text-[11px] mt-0.5">
+                Centralized database configuration and synchronization engine.
               </p>
             </div>
+            <button
+              type="button"
+              onClick={fetchDbStatus}
+              disabled={isCheckingDb}
+              className="px-2.5 py-1 text-[11px] font-bold text-[#173D72] bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 transition-colors"
+            >
+              {isCheckingDb ? 'Checking...' : 'Refresh Status'}
+            </button>
+          </div>
 
-            <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-blue-900">
-              <div className="font-bold flex items-center gap-1.5">
-                <UploadCloud className="w-3.5 h-3.5 text-blue-600" />
-                Google Cloud Firestore (Cloud Sync Ready)
+          <div className="space-y-3">
+            {/* Database Provider & Live Status */}
+            <div className="p-3.5 rounded-lg border border-gray-200 bg-[#F5F7FA] space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-gray-700 uppercase tracking-wider text-[10px]">Database Provider</span>
+                <span className="font-extrabold text-[#173D72]">{dbStatus.databaseProvider}</span>
               </div>
-              <p className="text-[11px] text-blue-700 mt-1">
-                To sync all data directly to Google Cloud Firestore across multiple devices and mobile phones, add your Firebase keys in the <code>.env</code> file.
-              </p>
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-gray-700 uppercase tracking-wider text-[10px]">Connection Status</span>
+                {dbStatus.connectionStatus === 'Connected' ? (
+                  <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> Connected
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 flex items-center gap-1">
+                    <XCircle className="w-3.5 h-3.5 text-amber-600" /> Disconnected
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-gray-500 pt-1 border-t border-gray-200">
+                <span>Database Name: <strong>{dbStatus.databaseName}</strong></span>
+                <span>Last Check: {new Date(dbStatus.lastChecked).toLocaleTimeString()}</span>
+              </div>
+            </div>
+
+            {/* Live Metrics Retrieved from MongoDB */}
+            <div className="grid grid-cols-2 gap-2 text-center">
+              <div className="p-2.5 bg-white border border-gray-200 rounded-lg">
+                <div className="text-base font-black text-[#173D72]">{dbStatus.counts.studentRecords}</div>
+                <div className="text-[10px] font-bold text-gray-500 uppercase">Total Student Records</div>
+              </div>
+              <div className="p-2.5 bg-white border border-gray-200 rounded-lg">
+                <div className="text-base font-black text-[#173D72]">{dbStatus.counts.professors}</div>
+                <div className="text-[10px] font-bold text-gray-500 uppercase">Total Professor Records</div>
+              </div>
+              <div className="p-2.5 bg-white border border-gray-200 rounded-lg">
+                <div className="text-base font-black text-[#173D72]">{dbStatus.counts.timetables}</div>
+                <div className="text-[10px] font-bold text-gray-500 uppercase">Total Timetable Records</div>
+              </div>
+              <div className="p-2.5 bg-white border border-gray-200 rounded-lg">
+                <div className="text-base font-black text-[#173D72]">{dbStatus.counts.attendance}</div>
+                <div className="text-[10px] font-bold text-gray-500 uppercase">Total Attendance Records</div>
+              </div>
             </div>
           </div>
 
@@ -1362,11 +1461,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab, onNav
               onClick={handleExportDatabase}
               className="px-3.5 py-2 font-bold text-xs bg-[#173D72] text-white hover:bg-blue-900 rounded-lg flex items-center gap-1.5 shadow-2xs"
             >
-              <UploadCloud className="w-3.5 h-3.5" /> Download Database Backup (.JSON)
+              <UploadCloud className="w-3.5 h-3.5" /> Export Database Backup (JSON)
             </button>
 
             <label className="cursor-pointer px-3.5 py-2 font-bold text-xs bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-lg flex items-center gap-1.5">
-              <span>Restore from JSON File</span>
+              <span>Restore Database Backup (JSON)</span>
               <input
                 type="file"
                 accept=".json"

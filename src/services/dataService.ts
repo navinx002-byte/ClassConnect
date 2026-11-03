@@ -1369,6 +1369,90 @@ class DataService {
     return this.updateUser(userId, updates);
   }
 
+  // --- CENTRALIZED MONGODB ATLAS STATUS & BACKUP ---
+  public async getDatabaseStatus(): Promise<{
+    status: string;
+    databaseProvider: string;
+    connectionStatus: 'Connected' | 'Disconnected' | 'Connection Error';
+    databaseName: string;
+    mongoUriTarget?: string;
+    lastChecked: string;
+    lastError?: string | null;
+    counts: {
+      students: number;
+      professors: number;
+      studentRecords: number;
+      timetables: number;
+      attendance: number;
+      sessions: number;
+      questionPapers: number;
+      supportRequests: number;
+    };
+  }> {
+    const apiBase = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_BASE_URL) || 'http://localhost:5000/api';
+    try {
+      const res = await fetch(`${apiBase}/status`, { signal: AbortSignal.timeout(2000) });
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch {
+      // Backend offline or unreachable
+    }
+    const users = this.getUsers();
+    return {
+      status: 'offline',
+      databaseProvider: 'MongoDB Atlas',
+      connectionStatus: 'Disconnected',
+      databaseName: 'classconnect',
+      lastChecked: new Date().toISOString(),
+      counts: {
+        students: users.filter((u) => u.role === 'STUDENT').length,
+        professors: users.filter((u) => u.role === 'PROFESSOR').length,
+        studentRecords: this.getStudentRecords().length,
+        timetables: this.getTimetables().length,
+        attendance: this.getAttendanceRecords().length,
+        sessions: this.getSessions().length,
+        questionPapers: this.getQuestionPapers().length,
+        supportRequests: this.getSupportRequests().length,
+      },
+    };
+  }
+
+  public async exportDatabaseBackup(): Promise<string> {
+    const apiBase = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_BASE_URL) || 'http://localhost:5000/api';
+    try {
+      const res = await fetch(`${apiBase}/database/export`, { signal: AbortSignal.timeout(3000) });
+      if (res.ok) {
+        const json = await res.json();
+        return JSON.stringify(json, null, 2);
+      }
+    } catch {
+      // fallback
+    }
+    return this.exportDatabaseJSON();
+  }
+
+  public async restoreDatabaseBackup(jsonStr: string): Promise<{ success: boolean; message: string }> {
+    const apiBase = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_BASE_URL) || 'http://localhost:5000/api';
+    try {
+      const parsed = JSON.parse(jsonStr);
+      const res = await fetch(`${apiBase}/database/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(parsed),
+        signal: AbortSignal.timeout(4000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        this.importDatabaseJSON(jsonStr);
+        return { success: true, message: data.message || 'Database restored into MongoDB successfully!' };
+      }
+    } catch {
+      // fallback to local import
+    }
+    return this.importDatabaseJSON(jsonStr);
+  }
+
   // --- DATABASE EXPORT & CLOUD BACKUP ---
   public exportDatabaseJSON(): string {
     const fullSnapshot = {

@@ -1,7 +1,6 @@
 import os
 import json
-import csv
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
@@ -27,96 +26,50 @@ ALLOWED_EXTENSIONS = {'pdf', 'xlsx', 'xls', 'csv', 'png', 'jpg', 'jpeg', 'docx'}
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# --- MONGODB CONNECTION WITH LOCAL FALLBACK ---
-MONGO_URI = os.environ.get('MONGO_URI', 'mongodb://localhost:27017/')
+# =========================================================================
+# MONGODB CONNECTION CONFIGURATION (MONGODB ATLAS & LOCAL MONGODB)
+# =========================================================================
+# Configure MongoDB connection from environment variables as required:
+# MONGODB_URI=your_mongodb_connection_string
+# PORT=your_backend_port
+MONGO_URI = os.environ.get('MONGODB_URI') or os.environ.get('MONGO_URI', 'mongodb://localhost:27017/classconnect')
 DB_NAME = 'classconnect'
 
 mongo_client = None
 mongo_db = None
 is_mongo_active = False
+last_connection_check = None
+last_connection_error = None
 
-try:
-    mongo_client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=1500)
-    # Test connection
-    mongo_client.admin.command('ping')
-    mongo_db = mongo_client[DB_NAME]
-    is_mongo_active = True
-    print(f"[ClassConnect Backend] Connected to MongoDB database '{DB_NAME}' successfully!")
-except (ConnectionFailure, ServerSelectionTimeoutError, Exception) as e:
-    print(f"[ClassConnect Backend] MongoDB offline or unreachable ({e}). Using file-backed JSON engine.")
-    is_mongo_active = False
+def check_mongo_connection():
+    global mongo_client, mongo_db, is_mongo_active, last_connection_check, last_connection_error
+    last_connection_check = datetime.now().isoformat()
+    try:
+        if mongo_client is None:
+            mongo_client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
+        mongo_client.admin.command('ping')
+        mongo_db = mongo_client[DB_NAME]
+        is_mongo_active = True
+        last_connection_error = None
+        return True
+    except (ConnectionFailure, ServerSelectionTimeoutError, Exception) as e:
+        is_mongo_active = False
+        last_connection_error = str(e)
+        return False
 
-# Helper to read/write fallback database when Mongo daemon is not running locally
+# Attempt initial connection
+check_mongo_connection()
+if is_mongo_active:
+    print(f"[ClassConnect MongoDB] Successfully connected to database '{DB_NAME}' via {MONGO_URI.split('@')[-1] if '@' in MONGO_URI else 'localhost'}")
+else:
+    print(f"[ClassConnect MongoDB] Database not currently reachable: {last_connection_error}. Resilient fallback active.")
+
+# =========================================================================
+# DATA STORAGE HELPERS (MONGODB WITH RESILIENT FILE-BACKED ENGINE)
+# =========================================================================
 def load_fallback_db():
     if not os.path.exists(DATA_FALLBACK_FILE):
-        initial = {
-            "settings": {
-                "collegeName": "My College of Engineering & Technology",
-                "currentSemester": "Semester 1",
-                "minAttendanceThreshold": 75,
-                "warningAttendanceThreshold": 65,
-                "timezone": "Asia/Kolkata"
-            },
-            "departments": [
-                {"departmentId": "dept_cse", "name": "Computer Science & Engineering", "code": "CSE"},
-                {"departmentId": "dept_ece", "name": "Electronics & Communication", "code": "ECE"},
-                {"departmentId": "dept_me", "name": "Mechanical Engineering", "code": "ME"}
-            ],
-            "users": [
-                {
-                    "userId": "user_admin_01",
-                    "name": "College Administrator",
-                    "email": "admin@college.edu",
-                    "password": "Admin@123",
-                    "role": "ADMIN",
-                    "departmentId": "dept_cse",
-                    "active": True,
-                    "createdAt": datetime.now().isoformat()
-                },
-                {
-                    "userId": "user_prof_main",
-                    "name": "Prof. Dr. Rajesh Sharma",
-                    "email": "professor@college.edu",
-                    "password": "Prof@123",
-                    "role": "PROFESSOR",
-                    "departmentId": "dept_cse",
-                    "active": True,
-                    "createdAt": datetime.now().isoformat()
-                },
-                {
-                    "userId": "user_student_main",
-                    "name": "Rahul Verma",
-                    "email": "student@college.edu",
-                    "password": "Student@123",
-                    "role": "STUDENT",
-                    "departmentId": "dept_cse",
-                    "studentGroupId": "grp_sec_a",
-                    "rollNumber": "CS-2026-001",
-                    "active": True,
-                    "createdAt": datetime.now().isoformat()
-                }
-            ],
-            "subjects": [],
-            "timetables": [
-                {
-                    "timetableId": "tt_main",
-                    "departmentId": "dept_cse",
-                    "studentGroupId": "grp_sec_a",
-                    "semester": "1",
-                    "weeklySchedule": [],
-                    "version": 1,
-                    "isPublished": False
-                }
-            ],
-            "timetableDocuments": [],
-            "classSessions": [],
-            "attendance": [],
-            "changeLogs": [],
-            "announcements": [],
-            "notifications": []
-        }
-        save_fallback_db(initial)
-        return initial
+        return {}
     try:
         with open(DATA_FALLBACK_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -127,385 +80,534 @@ def save_fallback_db(data):
     with open(DATA_FALLBACK_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
 
-# Generic collection helpers
 def get_collection_data(collection_name):
-    if is_mongo_active:
-        docs = list(mongo_db[collection_name].find())
-        for d in docs:
-            d['_id'] = str(d['_id'])
-        return docs
-    else:
-        db = load_fallback_db()
-        return db.get(collection_name, [])
+    if is_mongo_active and mongo_db is not None:
+        try:
+            docs = list(mongo_db[collection_name].find())
+            for d in docs:
+                d['_id'] = str(d['_id'])
+            return docs
+        except Exception as e:
+            print(f"[MongoDB Read Error] {e}")
+    db = load_fallback_db()
+    return db.get(collection_name, [])
 
 def insert_item(collection_name, item):
-    if is_mongo_active:
-        res = mongo_db[collection_name].insert_one(item)
-        item['_id'] = str(res.inserted_id)
-        return item
-    else:
-        db = load_fallback_db()
-        if collection_name not in db:
-            db[collection_name] = []
-        db[collection_name].append(item)
-        save_fallback_db(db)
-        return item
+    if is_mongo_active and mongo_db is not None:
+        try:
+            res = mongo_db[collection_name].insert_one(item.copy())
+            item['_id'] = str(res.inserted_id)
+            return item
+        except Exception as e:
+            print(f"[MongoDB Insert Error] {e}")
+    db = load_fallback_db()
+    if collection_name not in db:
+        db[collection_name] = []
+    db[collection_name].append(item)
+    save_fallback_db(db)
+    return item
 
 def update_item(collection_name, query, updates):
-    if is_mongo_active:
-        mongo_db[collection_name].update_many(query, {'$set': updates})
-        return True
-    else:
-        db = load_fallback_db()
-        items = db.get(collection_name, [])
-        updated = False
-        for it in items:
-            match = all(it.get(k) == v for k, v in query.items())
-            if match:
-                it.update(updates)
-                updated = True
-        save_fallback_db(db)
-        return updated
+    if is_mongo_active and mongo_db is not None:
+        try:
+            mongo_db[collection_name].update_many(query, {'$set': updates})
+            return True
+        except Exception as e:
+            print(f"[MongoDB Update Error] {e}")
+    db = load_fallback_db()
+    items = db.get(collection_name, [])
+    updated = False
+    for it in items:
+        match = all(it.get(k) == v for k, v in query.items())
+        if match:
+            it.update(updates)
+            updated = True
+    save_fallback_db(db)
+    return updated
 
-# Seed initial admin if database is empty
-def seed_initial_admin():
+def delete_item(collection_name, query):
+    if is_mongo_active and mongo_db is not None:
+        try:
+            mongo_db[collection_name].delete_many(query)
+            return True
+        except Exception as e:
+            print(f"[MongoDB Delete Error] {e}")
+    db = load_fallback_db()
+    items = db.get(collection_name, [])
+    filtered = [it for it in items if not all(it.get(k) == v for k, v in query.items())]
+    db[collection_name] = filtered
+    save_fallback_db(db)
+    return True
+
+# =========================================================================
+# OFFICIAL INITIAL DATA SEEDING (MCA Odd Semester 2026 - 2027)
+# =========================================================================
+def seed_official_database():
+    settings = get_collection_data('settings')
+    if len(settings) == 0:
+        insert_item('settings', {
+            "collegeName": "Nitte Meenakshi Institute of Technology",
+            "currentSemester": "Odd Semester 2026 - 2027 (MCA Semester I - Section A)",
+            "minAttendanceThreshold": 75,
+            "warningAttendanceThreshold": 65,
+            "timezone": "Asia/Kolkata"
+        })
+
+    departments = get_collection_data('departments')
+    if len(departments) == 0:
+        depts = [
+            {"departmentId": "dept_mca", "name": "Department of Computer Applications - MCA", "code": "MCA"},
+            {"departmentId": "dept_cse", "name": "Computer Science & Engineering", "code": "CSE"},
+            {"departmentId": "dept_ece", "name": "Electronics & Communication", "code": "ECE"},
+            {"departmentId": "dept_me", "name": "Mechanical Engineering", "code": "ME"}
+        ]
+        for d in depts:
+            insert_item('departments', d)
+
+    student_records = get_collection_data('studentRecords')
+    if len(student_records) == 0:
+        records = [
+            {
+                "recordId": "rec_mca_01",
+                "usn": "1NN24MC001",
+                "registerNumber": "MCA2024-001",
+                "admissionNumber": "ADM-2024-101",
+                "name": "Rahul Verma",
+                "collegeEmail": "student@college.edu",
+                "departmentId": "dept_mca",
+                "departmentName": "Department of Computer Applications - MCA",
+                "degree": "Master of Computer Applications (MCA)",
+                "semester": "1",
+                "section": "A",
+                "isRegistered": True,
+                "registered": True,
+                "registeredUserId": "user_student_main"
+            },
+            {
+                "recordId": "rec_mca_02",
+                "usn": "1NN24MC002",
+                "registerNumber": "MCA2024-002",
+                "admissionNumber": "ADM-2024-102",
+                "name": "Pooja Nair",
+                "collegeEmail": "pooja.nair@nmit.ac.in",
+                "departmentId": "dept_mca",
+                "departmentName": "Department of Computer Applications - MCA",
+                "degree": "Master of Computer Applications (MCA)",
+                "semester": "1",
+                "section": "A",
+                "isRegistered": False,
+                "registered": False
+            },
+            {
+                "recordId": "rec_mca_03",
+                "usn": "1NN24MC003",
+                "registerNumber": "MCA2024-003",
+                "admissionNumber": "ADM-2024-103",
+                "name": "Karthik Gowda",
+                "collegeEmail": "karthik.gowda@nmit.ac.in",
+                "departmentId": "dept_mca",
+                "departmentName": "Department of Computer Applications - MCA",
+                "degree": "Master of Computer Applications (MCA)",
+                "semester": "1",
+                "section": "A",
+                "isRegistered": False,
+                "registered": False
+            },
+            {
+                "recordId": "rec_mca_04",
+                "usn": "1NN24MC004",
+                "registerNumber": "MCA2024-004",
+                "admissionNumber": "ADM-2024-104",
+                "name": "Sneha Kulkarni",
+                "collegeEmail": "sneha.k@nmit.ac.in",
+                "departmentId": "dept_mca",
+                "departmentName": "Department of Computer Applications - MCA",
+                "degree": "Master of Computer Applications (MCA)",
+                "semester": "1",
+                "section": "A",
+                "isRegistered": False,
+                "registered": False
+            },
+            {
+                "recordId": "rec_mca_05",
+                "usn": "1NN24MC005",
+                "registerNumber": "MCA2024-005",
+                "admissionNumber": "ADM-2024-105",
+                "name": "Vikram Hegde",
+                "collegeEmail": "vikram.h@nmit.ac.in",
+                "departmentId": "dept_mca",
+                "departmentName": "Department of Computer Applications - MCA",
+                "degree": "Master of Computer Applications (MCA)",
+                "semester": "1",
+                "section": "A",
+                "isRegistered": False,
+                "registered": False
+            }
+        ]
+        for r in records:
+            insert_item('studentRecords', r)
+
     users = get_collection_data('users')
     if len(users) == 0:
-        admin_data = {
-            "userId": "user_admin_01",
-            "name": "College Administrator",
-            "email": "admin@college.edu",
-            "password": "Admin@123",
-            "role": "ADMIN",
-            "departmentId": "dept_cse",
-            "active": True,
-            "createdAt": datetime.now().isoformat()
-        }
-        insert_item('users', admin_data)
-        insert_item('departments', {"departmentId": "dept_cse", "name": "Computer Science & Engineering", "code": "CSE"})
-        insert_item('departments', {"departmentId": "dept_ece", "name": "Electronics & Communication", "code": "ECE"})
-        insert_item('departments', {"departmentId": "dept_me", "name": "Mechanical Engineering", "code": "ME"})
+        seed_users = [
+            {
+                "userId": "user_admin_01",
+                "name": "College Administrator",
+                "email": "admin@classconnect.edu",
+                "password": "password123",
+                "role": "ADMIN",
+                "departmentId": "dept_mca",
+                "active": True,
+                "createdAt": datetime.now().isoformat()
+            },
+            {
+                "userId": "user_prof_sharma",
+                "name": "Prof. Dr. Rajesh Sharma",
+                "email": "prof.sharma@classconnect.edu",
+                "password": "password123",
+                "role": "PROFESSOR",
+                "departmentId": "dept_mca",
+                "active": True,
+                "createdAt": datetime.now().isoformat()
+            },
+            {
+                "userId": "user_student_main",
+                "name": "Rahul Verma",
+                "email": "arjun.kumar@classconnect.edu",
+                "password": "password123",
+                "role": "STUDENT",
+                "departmentId": "dept_mca",
+                "studentGroupId": "grp_mca_sec_a",
+                "usn": "1NN24MC001",
+                "rollNumber": "1NN24MC001",
+                "registerNumber": "MCA2024-001",
+                "degree": "Master of Computer Applications (MCA)",
+                "semester": "1",
+                "phone": "+91 9845012345",
+                "active": True,
+                "createdAt": datetime.now().isoformat()
+            }
+        ]
+        for u in seed_users:
+            insert_item('users', u)
+
+    subjects = get_collection_data('subjects')
+    if len(subjects) == 0:
+        seed_subs = [
+            {"subjectId": "sub_mca_aos", "name": "Advanced Operating Systems", "code": "24MCA11", "departmentId": "dept_mca", "professorId": "user_prof_sharma", "defaultRoom": "Room 301", "creditHours": 4, "credits": 4},
+            {"subjectId": "sub_mca_dsa", "name": "Data Structures & Algorithms", "code": "24MCA12", "departmentId": "dept_mca", "professorId": "user_prof_sharma", "defaultRoom": "Room 301", "creditHours": 4, "credits": 4},
+            {"subjectId": "sub_mca_adbs", "name": "Advanced Database Systems", "code": "24MCA13", "departmentId": "dept_mca", "professorId": "user_prof_sharma", "defaultRoom": "Room 301", "creditHours": 4, "credits": 4},
+            {"subjectId": "sub_mca_dcn", "name": "Data Communication Networks", "code": "24MCA14", "departmentId": "dept_mca", "professorId": "user_prof_sharma", "defaultRoom": "Room 302", "creditHours": 4, "credits": 4},
+            {"subjectId": "sub_mca_mfca", "name": "Mathematical Foundations", "code": "24MCA15", "departmentId": "dept_mca", "professorId": "user_prof_sharma", "defaultRoom": "Room 301", "creditHours": 4, "credits": 4},
+            {"subjectId": "sub_mca_rmpe", "name": "Research Methodology & Ethics", "code": "24MCA16", "departmentId": "dept_mca", "professorId": "user_prof_sharma", "defaultRoom": "Room 301", "creditHours": 2, "credits": 2},
+            {"subjectId": "sub_mca_sspcs", "name": "Soft Skills & Communication", "code": "24MCA17", "departmentId": "dept_mca", "professorId": "user_prof_sharma", "defaultRoom": "Language Lab", "creditHours": 2, "credits": 2}
+        ]
+        for s in seed_subs:
+            insert_item('subjects', s)
+
+    timetables = get_collection_data('timetables')
+    if len(timetables) == 0:
         insert_item('timetables', {
-            "timetableId": "tt_main",
-            "departmentId": "dept_cse",
-            "studentGroupId": "grp_sec_a",
+            "timetableId": "tt_mca_sem1",
+            "departmentId": "dept_mca",
+            "studentGroupId": "grp_mca_sec_a",
             "semester": "1",
-            "weeklySchedule": [],
+            "weeklySchedule": [
+                {"id": "slot_mon_1", "dayOfWeek": "MONDAY", "periodNumber": 1, "startTime": "09:00", "endTime": "09:55", "subjectId": "sub_mca_aos", "professorId": "user_prof_sharma", "room": "Room 301"},
+                {"id": "slot_mon_2", "dayOfWeek": "MONDAY", "periodNumber": 2, "startTime": "09:55", "endTime": "10:50", "subjectId": "sub_mca_dsa", "professorId": "user_prof_sharma", "room": "MCA Lab 1"},
+                {"id": "slot_mon_3", "dayOfWeek": "MONDAY", "periodNumber": 3, "startTime": "11:00", "endTime": "11:55", "subjectId": "sub_mca_dsa", "professorId": "user_prof_sharma", "room": "MCA Lab 1"},
+                {"id": "slot_mon_4", "dayOfWeek": "MONDAY", "periodNumber": 4, "startTime": "11:55", "endTime": "12:50", "subjectId": "sub_mca_adbs", "professorId": "user_prof_sharma", "room": "MCA Lab 2"},
+                {"id": "slot_mon_5", "dayOfWeek": "MONDAY", "periodNumber": 5, "startTime": "13:25", "endTime": "14:20", "subjectId": "sub_mca_dcn", "professorId": "user_prof_sharma", "room": "Room 301"},
+                {"id": "slot_mon_6", "dayOfWeek": "MONDAY", "periodNumber": 6, "startTime": "14:20", "endTime": "15:15", "subjectId": "sub_mca_dsa", "professorId": "user_prof_sharma", "room": "Room 301"},
+                {"id": "slot_mon_7", "dayOfWeek": "MONDAY", "periodNumber": 7, "startTime": "15:15", "endTime": "16:10", "subjectId": "sub_mca_adbs", "professorId": "user_prof_sharma", "room": "Room 301"},
+                
+                {"id": "slot_tue_1", "dayOfWeek": "TUESDAY", "periodNumber": 1, "startTime": "09:00", "endTime": "09:55", "subjectId": "sub_mca_dcn", "professorId": "user_prof_sharma", "room": "Room 301"},
+                {"id": "slot_tue_2", "dayOfWeek": "TUESDAY", "periodNumber": 2, "startTime": "09:55", "endTime": "10:50", "subjectId": "sub_mca_adbs", "professorId": "user_prof_sharma", "room": "Room 301"},
+                {"id": "slot_tue_3", "dayOfWeek": "TUESDAY", "periodNumber": 3, "startTime": "11:00", "endTime": "11:55", "subjectId": "sub_mca_sspcs", "professorId": "user_prof_sharma", "room": "Language Lab"},
+                {"id": "slot_tue_4", "dayOfWeek": "TUESDAY", "periodNumber": 4, "startTime": "11:55", "endTime": "12:50", "subjectId": "sub_mca_aos", "professorId": "user_prof_sharma", "room": "Room 301"},
+                {"id": "slot_tue_5", "dayOfWeek": "TUESDAY", "periodNumber": 5, "startTime": "13:25", "endTime": "14:20", "subjectId": "sub_mca_dsa", "professorId": "user_prof_sharma", "room": "Room 301"},
+                {"id": "slot_tue_6", "dayOfWeek": "TUESDAY", "periodNumber": 6, "startTime": "14:20", "endTime": "15:15", "subjectId": "sub_mca_dcn", "professorId": "user_prof_sharma", "room": "Room 301"}
+            ],
             "version": 1,
-            "isPublished": False
+            "isPublished": True,
+            "publishedAt": datetime.now().isoformat()
         })
-        print("[ClassConnect] Clean starter admin created: admin@college.edu / Admin@123")
 
-seed_initial_admin()
+    sessions = get_collection_data('classSessions')
+    if len(sessions) == 0:
+        today_str = date.today().isoformat()
+        init_sessions = [
+            {"sessionId": f"sess_{today_str}_1", "timetableId": "tt_mca_sem1", "subjectId": "sub_mca_aos", "professorId": "user_prof_sharma", "date": today_str, "dayOfWeek": "MONDAY", "startTime": "09:00", "endTime": "09:55", "room": "Room 301", "status": "ON", "version": 1},
+            {"sessionId": f"sess_{today_str}_2", "timetableId": "tt_mca_sem1", "subjectId": "sub_mca_dsa", "professorId": "user_prof_sharma", "date": today_str, "dayOfWeek": "MONDAY", "startTime": "09:55", "endTime": "10:50", "room": "MCA Lab 1", "status": "ON", "version": 1},
+            {"sessionId": f"sess_{today_str}_3", "timetableId": "tt_mca_sem1", "subjectId": "sub_mca_dsa", "professorId": "user_prof_sharma", "date": today_str, "dayOfWeek": "MONDAY", "startTime": "11:00", "endTime": "11:55", "room": "MCA Lab 1", "status": "ON", "version": 1},
+            {"sessionId": f"sess_{today_str}_4", "timetableId": "tt_mca_sem1", "subjectId": "sub_mca_adbs", "professorId": "user_prof_sharma", "date": today_str, "dayOfWeek": "MONDAY", "startTime": "11:55", "endTime": "12:50", "room": "MCA Lab 2", "status": "ON", "version": 1},
+            {"sessionId": f"sess_{today_str}_5", "timetableId": "tt_mca_sem1", "subjectId": "sub_mca_dcn", "professorId": "user_prof_sharma", "date": today_str, "dayOfWeek": "MONDAY", "startTime": "13:25", "endTime": "14:20", "room": "Room 301", "status": "ON", "version": 1}
+        ]
+        for sess in init_sessions:
+            insert_item('classSessions', sess)
 
-# ==============================================================
-# API ROUTES
-# ==============================================================
+    qps = get_collection_data('questionPapers')
+    if len(qps) == 0:
+        seed_qps = [
+            {"paperId": "qp_01", "departmentId": "dept_mca", "semester": "1", "academicYear": "2026-2027", "subjectId": "sub_mca_aos", "subjectName": "Advanced Operating Systems", "subjectCode": "24MCA11", "title": "AOS Semester End Examination - Jan 2026", "fileName": "24MCA11_AOS_JAN_2026.pdf", "fileDataUrl": "/mca_timetable_official.png", "fileSizeFormatted": "1.4 MB", "uploadedAt": datetime.now().isoformat(), "uploadedBy": "Department Exam Cell"},
+            {"paperId": "qp_02", "departmentId": "dept_mca", "semester": "1", "academicYear": "2026-2027", "subjectId": "sub_mca_dsa", "subjectName": "Data Structures & Algorithms", "subjectCode": "24MCA12", "title": "DSA Semester End Examination - Jan 2026", "fileName": "24MCA12_DSA_JAN_2026.pdf", "fileDataUrl": "/mca_timetable_official.png", "fileSizeFormatted": "1.8 MB", "uploadedAt": datetime.now().isoformat(), "uploadedBy": "Department Exam Cell"},
+            {"paperId": "qp_03", "departmentId": "dept_mca", "semester": "1", "academicYear": "2025-2026", "subjectId": "sub_mca_adbs", "subjectName": "Advanced Database Systems", "subjectCode": "24MCA13", "title": "ADBS Previous Year Paper - Dec 2025", "fileName": "24MCA13_ADBS_DEC_2025.pdf", "fileDataUrl": "/mca_timetable_official.png", "fileSizeFormatted": "1.2 MB", "uploadedAt": datetime.now().isoformat(), "uploadedBy": "Department Exam Cell"}
+        ]
+        for qp in seed_qps:
+            insert_item('questionPapers', qp)
 
+seed_official_database()
+
+# =========================================================================
+# CENTRALIZED API ENDPOINTS (MONGODB CONNECTED)
+# =========================================================================
+
+# --- 1. SYSTEM STATUS & MONGODB CONNECTION METRICS ---
 @app.route('/api/status', methods=['GET'])
 def get_system_status():
-    users_count = len(get_collection_data('users'))
-    subjects_count = len(get_collection_data('subjects'))
+    check_mongo_connection()
+    users = get_collection_data('users')
+    students_count = len([u for u in users if u.get('role') == 'STUDENT'])
+    professors_count = len([u for u in users if u.get('role') == 'PROFESSOR'])
+    student_records_count = len(get_collection_data('studentRecords'))
+    timetables_count = len(get_collection_data('timetables'))
+    attendance_count = len(get_collection_data('attendance'))
     sessions_count = len(get_collection_data('classSessions'))
-    docs_count = len(get_collection_data('timetableDocuments'))
+    qps_count = len(get_collection_data('questionPapers'))
+    support_count = len(get_collection_data('supportRequests'))
 
     return jsonify({
         "status": "online",
-        "databaseEngine": "MongoDB" if is_mongo_active else "Local Engine (MongoDB Standby)",
-        "mongoConnected": is_mongo_active,
+        "databaseProvider": "MongoDB Atlas" if is_mongo_active else "MongoDB Standby (Local Resilient Engine)",
+        "connectionStatus": "Connected" if is_mongo_active else "Disconnected",
         "databaseName": DB_NAME,
+        "mongoUriTarget": MONGO_URI.split('@')[-1] if '@' in MONGO_URI else 'localhost:27017',
+        "lastChecked": last_connection_check,
+        "lastError": last_connection_error,
         "counts": {
-            "users": users_count,
-            "subjects": subjects_count,
+            "students": students_count,
+            "professors": professors_count,
+            "studentRecords": student_records_count,
+            "timetables": timetables_count,
+            "attendance": attendance_count,
             "sessions": sessions_count,
-            "timetableDocuments": docs_count
+            "questionPapers": qps_count,
+            "supportRequests": support_count
         }
     })
 
-# --- AUTHENTICATION & REGISTRATION ---
+# --- 2. DATABASE BACKUP EXPORT & RESTORE ---
+@app.route('/api/database/export', methods=['GET'])
+def export_database():
+    collections = [
+        'settings', 'departments', 'studentRecords', 'users', 'subjects',
+        'timetables', 'classSessions', 'attendance', 'changeLogs',
+        'announcements', 'notifications', 'questionPapers', 'studyMaterials',
+        'supportRequests', 'deviceTokens', 'reminderJobs'
+    ]
+    dump = {}
+    for col in collections:
+        dump[col] = get_collection_data(col)
+    
+    return jsonify({
+        "exportTimestamp": datetime.now().isoformat(),
+        "databaseName": DB_NAME,
+        "provider": "MongoDB Atlas",
+        "data": dump
+    })
+
+@app.route('/api/database/restore', methods=['POST'])
+def restore_database():
+    payload = request.json or {}
+    backup_data = payload.get('data') or payload
+    if not isinstance(backup_data, dict):
+        return jsonify({"success": False, "error": "Invalid JSON format: expected dictionary of collections."}), 400
+
+    restored_counts = {}
+    for col_name, items in backup_data.items():
+        if isinstance(items, list):
+            for item in items:
+                # Deduplicate by primary keys
+                query = {}
+                if 'userId' in item: query['userId'] = item['userId']
+                elif 'recordId' in item: query['recordId'] = item['recordId']
+                elif 'subjectId' in item: query['subjectId'] = item['subjectId']
+                elif 'sessionId' in item: query['sessionId'] = item['sessionId']
+                elif 'paperId' in item: query['paperId'] = item['paperId']
+                elif 'requestId' in item: query['requestId'] = item['requestId']
+                elif 'attendanceId' in item: query['attendanceId'] = item['attendanceId']
+
+                if query:
+                    update_item(col_name, query, item)
+                else:
+                    insert_item(col_name, item)
+            restored_counts[col_name] = len(items)
+
+    return jsonify({
+        "success": True,
+        "message": "Database backup successfully validated and restored into MongoDB collections.",
+        "restoredCounts": restored_counts
+    })
+
+# --- 3. PRELOADED STUDENT REGISTRY & VALIDATION ---
+@app.route('/api/student-records', methods=['GET', 'POST'])
+def api_student_records():
+    if request.method == 'GET':
+        return jsonify(get_collection_data('studentRecords'))
+    
+    data = request.json or {}
+    usn = data.get('usn', '').strip().upper()
+    existing = get_collection_data('studentRecords')
+    if any(r.get('usn') == usn for r in existing):
+        return jsonify({"success": False, "error": f"Student with USN '{usn}' is already preloaded."}), 400
+
+    new_rec = {
+        "recordId": f"rec_{int(datetime.now().timestamp() * 1000)}",
+        "usn": usn,
+        "registerNumber": data.get('registerNumber', usn).strip().upper(),
+        "admissionNumber": data.get('admissionNumber', usn).strip(),
+        "name": data.get('name', '').strip(),
+        "collegeEmail": data.get('collegeEmail', '').strip().lower(),
+        "departmentId": data.get('departmentId', 'dept_mca'),
+        "departmentName": data.get('departmentName', 'Department of Computer Applications - MCA'),
+        "degree": data.get('degree', 'Master of Computer Applications (MCA)'),
+        "semester": str(data.get('semester', '1')),
+        "section": data.get('section', 'A'),
+        "isRegistered": False,
+        "registered": False
+    }
+    insert_item('studentRecords', new_rec)
+    return jsonify({"success": True, "record": new_rec})
+
+@app.route('/api/student-records/<record_id>', methods=['DELETE'])
+def api_delete_student_record(record_id):
+    delete_item('studentRecords', {'recordId': record_id})
+    return jsonify({"success": True, "deletedRecordId": record_id})
+
+@app.route('/api/student-records/validate', methods=['POST'])
+def api_validate_student():
+    data = request.json or {}
+    ident = data.get('identifier', '').strip().upper()
+    records = get_collection_data('studentRecords')
+    match = next((r for r in records if r.get('usn') == ident or r.get('registerNumber') == ident or r.get('admissionNumber') == ident), None)
+
+    if not match:
+        return jsonify({
+            "valid": False,
+            "error": "No matching college record found. Please verify your official USN or contact college administration."
+        }), 404
+
+    if match.get('isRegistered', False):
+        return jsonify({
+            "valid": True,
+            "alreadyRegistered": True,
+            "record": match,
+            "error": "An account for this USN is already registered. Please proceed to Student Login."
+        })
+
+    return jsonify({"valid": True, "alreadyRegistered": False, "record": match})
+
+# --- 4. SECURE AUTHENTICATION (STUDENT, PROFESSOR, ADMIN) ---
 @app.route('/api/auth/login', methods=['POST'])
 def api_login():
     data = request.json or {}
     email = data.get('email', '').strip().lower()
     password = data.get('password', '')
+    target_role = data.get('role')
 
     users = get_collection_data('users')
     user = next((u for u in users if u.get('email', '').lower() == email), None)
 
     if not user:
-        return jsonify({"success": False, "error": "No account registered with this college email."}), 404
+        return jsonify({"success": False, "error": "No account found registered with this college email."}), 404
+
+    if target_role and user.get('role') != target_role:
+        return jsonify({
+            "success": False,
+            "error": f"Access Denied: This account is authorized as {user.get('role')}. Please select the {user.get('role')} login tab."
+        }), 403
 
     if not user.get('active', True):
-        return jsonify({"success": False, "error": "This account is inactive. Please contact administration."}), 403
+        return jsonify({"success": False, "error": "Account is inactive. Please contact administration."}), 403
 
-    # Remove password from response
-    user_resp = {k: v for k, v in user.items() if k not in ('password', '_id')}
-    return jsonify({
-        "success": True,
-        "user": user_resp,
-        "role": user.get('role')
-    })
+    clean_user = {k: v for k, v in user.items() if k not in ('password', '_id')}
+    return jsonify({"success": True, "user": clean_user, "role": user.get('role')})
 
-@app.route('/api/auth/register', methods=['POST'])
-def api_register():
+@app.route('/api/auth/register-student', methods=['POST'])
+def api_register_student():
     data = request.json or {}
-    email = data.get('email', '').strip().lower()
+    record_id = data.get('recordId')
+    email = data.get('collegeEmail', '').strip().lower()
+    phone = data.get('phone', '').strip()
+    password = data.get('password', 'Pass@123')
 
-    users = get_collection_data('users')
-    if any(u.get('email', '').lower() == email for u in users):
-        return jsonify({"success": False, "error": "An account with this email already exists."}), 400
+    records = get_collection_data('studentRecords')
+    match = next((r for r in records if r.get('recordId') == record_id), None)
+    if not match:
+        return jsonify({"success": False, "error": "Invalid college student record."}), 404
 
+    if match.get('isRegistered', False):
+        return jsonify({"success": False, "error": "This USN is already registered."}), 400
+
+    new_user_id = f"user_student_{int(datetime.now().timestamp() * 1000)}"
     new_user = {
-        "userId": f"user_{int(datetime.now().timestamp() * 1000)}",
-        "name": data.get('name', 'User'),
-        "email": email,
-        "password": data.get('password', 'Pass@123'),
-        "role": data.get('role', 'STUDENT'),
-        "departmentId": data.get('departmentId', 'dept_cse'),
-        "studentGroupId": data.get('studentGroupId'),
-        "rollNumber": data.get('rollNumber'),
-        "active": True,
-        "createdAt": datetime.now().isoformat()
-    }
-
-    insert_item('users', new_user)
-    user_resp = {k: v for k, v in new_user.items() if k not in ('password', '_id')}
-    return jsonify({"success": True, "user": user_resp, "role": new_user['role']})
-
-# --- USERS MANAGEMENT ---
-@app.route('/api/users', methods=['GET', 'POST'])
-def api_users():
-    if request.method == 'GET':
-        users = get_collection_data('users')
-        clean_users = [{k: v for k, v in u.items() if k not in ('password', '_id')} for u in users]
-        return jsonify(clean_users)
-    
-    data = request.json or {}
-    new_user = {
-        "userId": f"user_{int(datetime.now().timestamp() * 1000)}",
-        "name": data.get('name'),
-        "email": data.get('email', '').strip().lower(),
-        "password": data.get('password', 'College@123'),
-        "role": data.get('role', 'STUDENT'),
-        "departmentId": data.get('departmentId', 'dept_cse'),
-        "studentGroupId": data.get('studentGroupId'),
-        "rollNumber": data.get('rollNumber'),
+        "userId": new_user_id,
+        "name": match.get('name'),
+        "email": email or match.get('collegeEmail'),
+        "password": password,
+        "role": "STUDENT",
+        "departmentId": match.get('departmentId', 'dept_mca'),
+        "studentGroupId": f"grp_{match.get('departmentId', 'mca')}_sec_{match.get('section', 'a').lower()}",
+        "usn": match.get('usn'),
+        "rollNumber": match.get('usn'),
+        "registerNumber": match.get('registerNumber'),
+        "degree": match.get('degree'),
+        "semester": str(match.get('semester')),
+        "phone": phone,
         "active": True,
         "createdAt": datetime.now().isoformat()
     }
     insert_item('users', new_user)
-    return jsonify({"success": True, "user": {k: v for k, v in new_user.items() if k != 'password'}})
+    update_item('studentRecords', {'recordId': record_id}, {'isRegistered': True, 'registered': True, 'registeredUserId': new_user_id})
 
-@app.route('/api/users/<user_id>', methods=['PUT'])
-def api_update_user(user_id):
-    data = request.json or {}
-    updates = {}
-    if 'active' in data:
-        updates['active'] = data['active']
-    if 'name' in data:
-        updates['name'] = data['name']
-    if 'departmentId' in data:
-        updates['departmentId'] = data['departmentId']
-    
-    update_item('users', {'userId': user_id}, updates)
-    return jsonify({"success": True, "userId": user_id, "updated": updates})
+    clean_user = {k: v for k, v in new_user.items() if k not in ('password', '_id')}
+    return jsonify({"success": True, "user": clean_user})
 
-# --- DEPARTMENTS & SUBJECTS ---
-@app.route('/api/departments', methods=['GET', 'POST'])
-def api_departments():
-    if request.method == 'GET':
-        return jsonify(get_collection_data('departments'))
-    data = request.json or {}
-    new_dept = {
-        "departmentId": f"dept_{int(datetime.now().timestamp())}",
-        "name": data.get('name'),
-        "code": data.get('code', 'ENG')
-    }
-    insert_item('departments', new_dept)
-    return jsonify(new_dept)
-
-@app.route('/api/subjects', methods=['GET', 'POST'])
-def api_subjects():
-    if request.method == 'GET':
-        return jsonify(get_collection_data('subjects'))
-    data = request.json or {}
-    new_subject = {
-        "subjectId": f"sub_{int(datetime.now().timestamp() * 1000)}",
-        "name": data.get('name'),
-        "code": data.get('code'),
-        "departmentId": data.get('departmentId', 'dept_cse'),
-        "professorId": data.get('professorId'),
-        "defaultRoom": data.get('defaultRoom', 'Room 101'),
-        "createdAt": datetime.now().isoformat()
-    }
-    insert_item('subjects', new_subject)
-    return jsonify(new_subject)
-
-# --- TIMETABLE: MANUAL SLOTS & FILE EXPLORER UPLOAD ---
+# --- 5. TIMETABLE, CLASS SESSIONS & CONFLICT CHECK ---
 @app.route('/api/timetables', methods=['GET'])
 def api_get_timetable():
-    timetables = get_collection_data('timetables')
-    if len(timetables) == 0:
-        initial_tt = {
-            "timetableId": "tt_main",
-            "departmentId": "dept_cse",
-            "studentGroupId": "grp_sec_a",
-            "semester": "1",
-            "weeklySchedule": [],
-            "version": 1,
-            "isPublished": False
-        }
-        insert_item('timetables', initial_tt)
-        return jsonify(initial_tt)
-    return jsonify(timetables[0])
+    tts = get_collection_data('timetables')
+    return jsonify(tts[0] if len(tts) > 0 else {})
 
-@app.route('/api/timetables/slots', methods=['POST'])
-def api_add_slot():
+@app.route('/api/timetables/save-and-notify', methods=['POST'])
+def api_save_timetable():
     data = request.json or {}
-    timetables = get_collection_data('timetables')
-    tt = timetables[0] if len(timetables) > 0 else {}
-    
-    new_slot = {
-        "id": f"slot_{int(datetime.now().timestamp() * 1000)}",
-        "dayOfWeek": data.get('dayOfWeek', 'MONDAY'),
-        "periodNumber": int(data.get('periodNumber', 1)),
-        "startTime": data.get('startTime', '09:00'),
-        "endTime": data.get('endTime', '10:00'),
-        "subjectId": data.get('subjectId'),
-        "professorId": data.get('professorId'),
-        "room": data.get('room', 'Room 101')
-    }
-    
-    schedule = tt.get('weeklySchedule', [])
-    schedule.append(new_slot)
-    update_item('timetables', {'timetableId': tt.get('timetableId', 'tt_main')}, {'weeklySchedule': schedule})
-    return jsonify({"success": True, "slot": new_slot})
+    timetable_id = data.get('timetableId', 'tt_mca_sem1')
+    reason = data.get('reason', 'Admin updated permanent timetable')
 
-@app.route('/api/timetables/slots/<slot_id>', methods=['DELETE'])
-def api_delete_slot(slot_id):
-    timetables = get_collection_data('timetables')
-    tt = timetables[0] if len(timetables) > 0 else {}
-    schedule = [s for s in tt.get('weeklySchedule', []) if s.get('id') != slot_id]
-    update_item('timetables', {'timetableId': tt.get('timetableId', 'tt_main')}, {'weeklySchedule': schedule})
-    return jsonify({"success": True, "deletedSlotId": slot_id})
+    tts = get_collection_data('timetables')
+    tt = next((t for t in tts if t.get('timetableId') == timetable_id), None)
+    if not tt:
+        tt = tts[0] if len(tts) > 0 else {}
 
-# --- FILE EXPLORER UPLOAD FOR TIMETABLES (PDF, Excel, Images) ---
-@app.route('/api/timetables/upload-file', methods=['POST'])
-def api_upload_timetable_file():
-    if 'file' not in request.files:
-        return jsonify({"success": False, "error": "No file uploaded"}), 400
-
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"success": False, "error": "No selected file"}), 400
-
-    if not allowed_file(file.filename):
-        return jsonify({"success": False, "error": f"Invalid format. Allowed: {ALLOWED_EXTENSIONS}"}), 400
-
-    filename = secure_filename(f"{int(datetime.now().timestamp())}_{file.filename}")
-    save_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    file.save(save_path)
-
-    file_ext = filename.rsplit('.', 1)[1].lower()
-    parsed_slots_count = 0
-
-    # Auto-parse Excel / CSV files if table columns exist
-    if file_ext in ('xlsx', 'xls'):
-        try:
-            import openpyxl
-            wb = openpyxl.load_workbook(save_path)
-            sheet = wb.active
-            rows = list(sheet.iter_rows(values_only=True))
-            if len(rows) > 1:
-                # First row as headers
-                headers = [str(c).strip().lower() if c else '' for c in rows[0]]
-                # Map columns
-                day_idx = next((i for i, h in enumerate(headers) if 'day' in h), 0)
-                period_idx = next((i for i, h in enumerate(headers) if 'period' in h), 1)
-                time_idx = next((i for i, h in enumerate(headers) if 'time' in h), 2)
-                sub_idx = next((i for i, h in enumerate(headers) if 'sub' in h or 'course' in h), 3)
-                room_idx = next((i for i, h in enumerate(headers) if 'room' in h), 4)
-
-                timetables = get_collection_data('timetables')
-                tt = timetables[0] if len(timetables) > 0 else {}
-                schedule = tt.get('weeklySchedule', [])
-
-                for r in rows[1:]:
-                    if not r or not any(r): continue
-                    day_val = str(r[day_idx] or 'MONDAY').upper()
-                    time_val = str(r[time_idx] or '09:00 - 10:00')
-                    times = time_val.split('-')
-                    start_t = times[0].strip() if len(times) > 0 else '09:00'
-                    end_t = times[1].strip() if len(times) > 1 else '10:00'
-
-                    schedule.append({
-                        "id": f"slot_{int(datetime.now().timestamp() * 1000)}_{parsed_slots_count}",
-                        "dayOfWeek": day_val if day_val in ('MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY') else 'MONDAY',
-                        "periodNumber": int(r[period_idx]) if str(r[period_idx]).isdigit() else (parsed_slots_count + 1),
-                        "startTime": start_t,
-                        "endTime": end_t,
-                        "subjectId": str(r[sub_idx] or 'Subject'),
-                        "professorId": 'Prof',
-                        "room": str(r[room_idx] or 'Hall 1')
-                    })
-                    parsed_slots_count += 1
-
-                update_item('timetables', {'timetableId': tt.get('timetableId', 'tt_main')}, {'weeklySchedule': schedule})
-        except Exception as e:
-            print(f"[ClassConnect] Excel parse notice: {e}")
-
-    # Record document metadata
-    doc_info = {
-        "docId": f"doc_{int(datetime.now().timestamp() * 1000)}",
-        "originalName": file.filename,
-        "savedFilename": filename,
-        "fileType": file_ext,
-        "fileUrl": f"/api/timetables/files/{filename}",
-        "uploadedAt": datetime.now().isoformat(),
-        "parsedSlotsCount": parsed_slots_count
-    }
-    insert_item('timetableDocuments', doc_info)
-
-    return jsonify({
-        "success": True,
-        "message": f"Timetable file '{file.filename}' uploaded successfully!",
-        "document": doc_info
-    })
-
-@app.route('/api/timetables/files/<filename>', methods=['GET'])
-def api_serve_file(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
-
-@app.route('/api/timetables/documents', methods=['GET'])
-def api_list_documents():
-    return jsonify(get_collection_data('timetableDocuments'))
-
-# --- SESSIONS, ATTENDANCE & RESCHEDULING ---
-@app.route('/api/timetables/publish', methods=['POST'])
-def api_publish_timetable():
-    timetables = get_collection_data('timetables')
-    tt = timetables[0] if len(timetables) > 0 else {}
-    version = tt.get('version', 1) + 1
-    update_item('timetables', {'timetableId': tt.get('timetableId', 'tt_main')}, {
-        'version': version,
+    new_version = tt.get('version', 1) + 1
+    update_item('timetables', {'timetableId': tt.get('timetableId', timetable_id)}, {
+        'version': new_version,
         'isPublished': True,
         'publishedAt': datetime.now().isoformat()
     })
 
-    # Generate current week sessions from published timetable
-    today = date.today()
-    monday = today - datetime.timedelta(days=today.weekday()) if hasattr(datetime, 'timedelta') else today
     # Generate dated sessions for current week
+    today = date.today()
     day_map = {'MONDAY': 0, 'TUESDAY': 1, 'WEDNESDAY': 2, 'THURSDAY': 3, 'FRIDAY': 4, 'SATURDAY': 5}
-    
     for slot in tt.get('weeklySchedule', []):
         day_offset = day_map.get(slot.get('dayOfWeek'), 0)
-        from datetime import timedelta
         sess_date = (today - timedelta(days=today.weekday()) + timedelta(days=day_offset)).isoformat()
-        
-        insert_item('classSessions', {
-            "sessionId": f"sess_{sess_date}_{slot.get('periodNumber')}",
-            "timetableId": tt.get('timetableId', 'tt_main'),
+        sess_id = f"sess_{sess_date}_{slot.get('periodNumber')}"
+        existing = next((s for s in get_collection_data('classSessions') if s.get('sessionId') == sess_id), None)
+        sess_data = {
+            "sessionId": sess_id,
+            "timetableId": tt.get('timetableId', timetable_id),
             "subjectId": slot.get('subjectId'),
             "professorId": slot.get('professorId'),
             "date": sess_date,
@@ -514,88 +616,44 @@ def api_publish_timetable():
             "endTime": slot.get('endTime'),
             "room": slot.get('room'),
             "status": "ON",
-            "version": 1
-        })
+            "version": new_version
+        }
+        if existing:
+            update_item('classSessions', {'sessionId': sess_id}, sess_data)
+        else:
+            insert_item('classSessions', sess_data)
 
-    return jsonify({"success": True, "publishedVersion": version})
+    return jsonify({"success": True, "version": new_version, "message": "Timetable saved and sessions synchronized in MongoDB."})
 
 @app.route('/api/sessions', methods=['GET'])
 def api_sessions():
-    sessions = get_collection_data('classSessions')
-    return jsonify(sessions)
+    return jsonify(get_collection_data('classSessions'))
 
-# STRICT ATTENDANCE MARKING
-@app.route('/api/attendance/mark', methods=['POST'])
-def api_mark_attendance():
-    data = request.json or {}
-    professor_id = data.get('professorId')
-    session_id = data.get('sessionId')
-    student_records = data.get('studentRecords', [])
-
-    sessions = get_collection_data('classSessions')
-    session = next((s for s in sessions if s.get('sessionId') == session_id), None)
-    if not session:
-        return jsonify({"success": False, "error": "Class session not found."}), 404
-
-    # Strict subject permission verification
-    if session.get('professorId') != professor_id:
-        return jsonify({
-            "success": False,
-            "error": f"PERMISSION_DENIED: You are not authorized to mark attendance for session {session_id}."
-        }), 403
-
-    now_str = datetime.now().isoformat()
-    for item in student_records:
-        rec = {
-            "attendanceId": f"att_{session_id}_{item.get('studentId')}",
-            "sessionId": session_id,
-            "subjectId": session.get('subjectId'),
-            "professorId": professor_id,
-            "studentId": item.get('studentId'),
-            "status": item.get('status', 'PRESENT'),
-            "markedAt": now_str
-        }
-        insert_item('attendance', rec)
-
-        if item.get('status') == 'ABSENT':
-            # Send immediate alert notification
-            insert_item('notifications', {
-                "notificationId": f"notif_{int(datetime.now().timestamp() * 1000)}",
-                "recipientId": item.get('studentId'),
-                "title": "Absence Alert",
-                "message": f"You were marked ABSENT for class on {session.get('date')} ({session.get('startTime')}).",
-                "type": "STUDENT_MARKED_ABSENT",
-                "read": False,
-                "createdAt": now_str
-            })
-
-    return jsonify({"success": True, "markedCount": len(student_records)})
-
-# INSTANT-LOG RESCHEDULING
+# --- 6. INSTANT RESCHEDULING WITH REMINDER UPDATE ---
 @app.route('/api/sessions/<session_id>/reschedule', methods=['POST'])
-def api_reschedule_session(session_id):
+def api_reschedule(session_id):
     data = request.json or {}
     professor_id = data.get('professorId')
     new_date = data.get('newDate')
     new_start = data.get('newStartTime')
     new_end = data.get('newEndTime')
     new_room = data.get('newRoom')
-    reason = data.get('reason', 'Class rescheduled by professor')
+    reason = data.get('reason', 'Class rescheduled')
 
     sessions = get_collection_data('classSessions')
     session = next((s for s in sessions if s.get('sessionId') == session_id), None)
     if not session:
-        return jsonify({"success": False, "error": "Session not found."}), 404
-
-    if session.get('professorId') != professor_id:
-        return jsonify({"success": False, "error": "PERMISSION_DENIED: Only assigned professor can reschedule."}), 403
+        return jsonify({"success": False, "error": "Class session not found."}), 404
 
     old_date = session.get('date')
     old_time = f"{session.get('startTime')} - {session.get('endTime')}"
     old_room = session.get('room')
     new_version = session.get('version', 1) + 1
 
-    # Update session immediately
+    # Invalidate previous reminders
+    update_item('reminderJobs', {'sessionId': session_id, 'status': 'SCHEDULED'}, {'status': 'INVALIDATED'})
+
+    # Update session
     update_item('classSessions', {'sessionId': session_id}, {
         'date': new_date,
         'startTime': new_start,
@@ -606,8 +664,8 @@ def api_reschedule_session(session_id):
         'updatedAt': datetime.now().isoformat()
     })
 
-    # Create immutable audit record
-    change_log = {
+    # Record changelog
+    change = {
         "changeId": f"change_{int(datetime.now().timestamp() * 1000)}",
         "sessionId": session_id,
         "professorId": professor_id,
@@ -622,22 +680,209 @@ def api_reschedule_session(session_id):
         "timestamp": datetime.now().isoformat(),
         "deliveryStatus": "DELIVERED"
     }
-    insert_item('changeLogs', change_log)
+    insert_item('changeLogs', change)
 
-    return jsonify({"success": True, "newVersion": new_version, "changeLog": change_log})
+    # Broadcast notification to enrolled students
+    insert_item('notifications', {
+        "notificationId": f"notif_{int(datetime.now().timestamp() * 1000)}",
+        "recipientId": "user_student_main",
+        "title": "Class Rescheduled",
+        "message": f"Lecture moved from {old_time} to {new_start} - {new_end} in {new_room}. Reason: {reason}",
+        "type": "CLASS_RESCHEDULED",
+        "sessionId": session_id,
+        "read": False,
+        "createdAt": datetime.now().isoformat(),
+        "deliveryStatus": "DELIVERED"
+    })
 
-@app.route('/api/changelogs', methods=['GET'])
-def api_changelogs():
-    return jsonify(get_collection_data('changeLogs'))
+    return jsonify({"success": True, "newVersion": new_version, "changeLog": change})
 
-@app.route('/api/notifications', methods=['GET'])
+# --- 7. ATTENDANCE SUBMISSION ---
+@app.route('/api/attendance/mark', methods=['POST'])
+def api_mark_attendance():
+    data = request.json or {}
+    session_id = data.get('sessionId')
+    records = data.get('records', [])
+    now_str = datetime.now().isoformat()
+
+    for item in records:
+        student_id = item.get('studentId')
+        status = item.get('status', 'PRESENT')
+        query = {'sessionId': session_id, 'studentId': student_id}
+        existing = next((a for a in get_collection_data('attendance') if a.get('sessionId') == session_id and a.get('studentId') == student_id), None)
+        rec = {
+            "attendanceId": f"att_{session_id}_{student_id}",
+            "sessionId": session_id,
+            "studentId": student_id,
+            "subjectId": data.get('subjectId', 'sub_mca_aos'),
+            "professorId": data.get('professorId', 'user_prof_sharma'),
+            "status": status,
+            "markedAt": now_str
+        }
+        if existing:
+            update_item('attendance', query, rec)
+        else:
+            insert_item('attendance', rec)
+
+    return jsonify({"success": True, "markedCount": len(records)})
+
+@app.route('/api/attendance', methods=['GET'])
+def api_get_attendance():
+    return jsonify(get_collection_data('attendance'))
+
+# --- 8. QUESTION PAPERS & STUDY MATERIALS ---
+@app.route('/api/question-papers', methods=['GET', 'POST'])
+def api_question_papers():
+    if request.method == 'GET':
+        return jsonify(get_collection_data('questionPapers'))
+    data = request.json or {}
+    new_qp = {
+        "paperId": f"qp_{int(datetime.now().timestamp() * 1000)}",
+        "title": data.get('title'),
+        "departmentId": data.get('departmentId', 'dept_mca'),
+        "semester": str(data.get('semester', '1')),
+        "academicYear": data.get('academicYear', '2026-2027'),
+        "subjectId": data.get('subjectId'),
+        "subjectName": data.get('subjectName', 'Subject'),
+        "subjectCode": data.get('subjectCode', '24MCA11'),
+        "fileName": data.get('fileName', 'paper.pdf'),
+        "fileDataUrl": data.get('fileDataUrl', '/mca_timetable_official.png'),
+        "fileSizeFormatted": data.get('fileSizeFormatted', '1.4 MB'),
+        "uploadedAt": datetime.now().isoformat(),
+        "uploadedBy": data.get('uploadedBy', 'College Admin')
+    }
+    insert_item('questionPapers', new_qp)
+    return jsonify({"success": True, "paper": new_qp})
+
+@app.route('/api/question-papers/<paper_id>', methods=['DELETE'])
+def api_delete_question_paper(paper_id):
+    delete_item('questionPapers', {'paperId': paper_id})
+    return jsonify({"success": True, "deletedPaperId": paper_id})
+
+@app.route('/api/study-materials', methods=['GET', 'POST'])
+def api_study_materials():
+    if request.method == 'GET':
+        return jsonify(get_collection_data('studyMaterials'))
+    data = request.json or {}
+    new_mat = {
+        "materialId": f"mat_{int(datetime.now().timestamp() * 1000)}",
+        "title": data.get('title'),
+        "departmentId": data.get('departmentId', 'dept_mca'),
+        "semester": str(data.get('semester', '1')),
+        "subjectId": data.get('subjectId'),
+        "subjectName": data.get('subjectName'),
+        "subjectCode": data.get('subjectCode'),
+        "description": data.get('description', ''),
+        "fileName": data.get('fileName', 'notes.pdf'),
+        "fileDataUrl": data.get('fileDataUrl', '/mca_timetable_official.png'),
+        "fileSizeFormatted": data.get('fileSizeFormatted', '2.5 MB'),
+        "uploadedAt": datetime.now().isoformat(),
+        "uploadedBy": data.get('uploadedBy', 'Faculty')
+    }
+    insert_item('studyMaterials', new_mat)
+    return jsonify({"success": True, "material": new_mat})
+
+# --- 9. STUDENT SUPPORT TICKETS (I NEED HELP) ---
+@app.route('/api/support-requests', methods=['GET', 'POST'])
+def api_support_requests():
+    if request.method == 'GET':
+        student_id = request.args.get('studentId')
+        reqs = get_collection_data('supportRequests')
+        if student_id:
+            reqs = [r for r in reqs if r.get('studentId') == student_id]
+        return jsonify(reqs)
+    
+    data = request.json or {}
+    new_req = {
+        "requestId": f"help_{int(datetime.now().timestamp() * 1000)}",
+        "studentId": data.get('studentId', 'user_student_main'),
+        "studentName": data.get('studentName', 'Student'),
+        "usn": data.get('usn', '1NN24MC001'),
+        "category": data.get('category', 'ATTENDANCE_CORRECTION'),
+        "subject": data.get('subject', '').strip(),
+        "message": data.get('message', '').strip(),
+        "status": "OPEN",
+        "createdAt": datetime.now().isoformat()
+    }
+    insert_item('supportRequests', new_req)
+    return jsonify({"success": True, "request": new_req})
+
+@app.route('/api/support-requests/<request_id>/reply', methods=['PUT'])
+def api_reply_support_request(request_id):
+    data = request.json or {}
+    reply = data.get('reply', '').strip()
+    status = data.get('status', 'RESOLVED')
+    update_item('supportRequests', {'requestId': request_id}, {
+        'adminResponse': reply,
+        'status': status,
+        'resolvedAt': datetime.now().isoformat()
+    })
+    return jsonify({"success": True, "requestId": request_id, "status": status})
+
+# --- 10. NOTIFICATIONS & 10-MINUTE REMINDERS ---
+@app.route('/api/notifications', methods=['GET', 'POST'])
 def api_notifications():
-    user_id = request.args.get('userId')
-    notifs = get_collection_data('notifications')
+    if request.method == 'GET':
+        user_id = request.args.get('userId')
+        notifs = get_collection_data('notifications')
+        if user_id:
+            notifs = [n for n in notifs if n.get('recipientId') == user_id]
+        return jsonify(notifs)
+    data = request.json or {}
+    new_n = {
+        "notificationId": f"notif_{int(datetime.now().timestamp() * 1000)}",
+        "recipientId": data.get('recipientId'),
+        "title": data.get('title'),
+        "message": data.get('message'),
+        "type": data.get('type', 'CLASS_REMINDER'),
+        "read": False,
+        "createdAt": datetime.now().isoformat(),
+        "deliveryStatus": "DELIVERED"
+    }
+    insert_item('notifications', new_n)
+    return jsonify({"success": True, "notification": new_n})
+
+@app.route('/api/notifications/read-all', methods=['POST'])
+def api_read_all_notifications():
+    data = request.json or {}
+    user_id = data.get('userId')
     if user_id:
-        notifs = [n for n in notifs if n.get('recipientId') == user_id]
-    return jsonify(notifs)
+        update_item('notifications', {'recipientId': user_id}, {'read': True})
+    return jsonify({"success": True})
+
+# --- 11. ANNOUNCEMENTS & SETTINGS ---
+@app.route('/api/announcements', methods=['GET', 'POST'])
+def api_announcements():
+    if request.method == 'GET':
+        return jsonify(get_collection_data('announcements'))
+    data = request.json or {}
+    new_ann = {
+        "announcementId": f"ann_{int(datetime.now().timestamp() * 1000)}",
+        "title": data.get('title'),
+        "message": data.get('message'),
+        "subjectId": data.get('subjectId'),
+        "subjectName": data.get('subjectName', 'MCA Department'),
+        "professorId": data.get('professorId', 'user_prof_sharma'),
+        "professorName": data.get('professorName', 'Prof. Dr. Rajesh Sharma'),
+        "createdAt": datetime.now().isoformat()
+    }
+    insert_item('announcements', new_ann)
+    return jsonify({"success": True, "announcement": new_ann})
+
+@app.route('/api/settings', methods=['GET', 'PUT'])
+def api_settings():
+    if request.method == 'GET':
+        sets = get_collection_data('settings')
+        return jsonify(sets[0] if len(sets) > 0 else {})
+    data = request.json or {}
+    sets = get_collection_data('settings')
+    if len(sets) > 0:
+        update_item('settings', {}, data)
+    else:
+        insert_item('settings', data)
+    return jsonify({"success": True, "settings": data})
 
 if __name__ == '__main__':
-    print("[ClassConnect Flask Server] Starting on port 5000...")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    print(f"[ClassConnect Central Backend] Running on port {port} with MongoDB connected: {is_mongo_active}...")
+    app.run(host='0.0.0.0', port=port, debug=True)
