@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import type { User, UserRole } from '../types';
+import type { User, UserRole, StudentRecord } from '../types';
 import { dataService } from '../services/dataService';
 
 interface AuthContextType {
@@ -7,11 +7,14 @@ interface AuthContextType {
   role: UserRole | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (email: string, pass: string) => Promise<{ success: boolean; role: UserRole; error?: string }>;
-  registerUser: (userData: Omit<User, 'userId' | 'createdAt'>) => Promise<{ success: boolean; user?: User; error?: string }>;
+  login: (email: string, pass: string, targetRole?: UserRole) => Promise<{ success: boolean; role: UserRole; error?: string }>;
+  validateStudent: (identifier: string) => Promise<{ valid: boolean; record?: StudentRecord; alreadyRegistered?: boolean; error?: string }>;
+  registerStudentAccount: (params: { recordId: string; collegeEmail: string; phone: string; password?: string }) => Promise<{ success: boolean; user?: User; error?: string }>;
   logout: () => void;
   resetPassword: (email: string) => Promise<{ success: boolean; message: string }>;
-  switchUserForDemo: (email: string) => void;
+  changePassword: (oldPass: string, newPass: string) => Promise<{ success: boolean; message: string }>;
+  updateProfile: (updates: Partial<User>) => Promise<User>;
+  switchUserForDemo: (email: string) => boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -41,9 +44,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
-  const login = async (email: string, _pass: string): Promise<{ success: boolean; role: UserRole; error?: string }> => {
-    // Artificial slight delay to simulate network security verification
-    await new Promise((res) => setTimeout(res, 350));
+  const login = async (
+    email: string,
+    _pass: string,
+    targetRole?: UserRole
+  ): Promise<{ success: boolean; role: UserRole; error?: string }> => {
+    await new Promise((res) => setTimeout(res, 250));
 
     const cleanEmail = email.trim().toLowerCase();
     const user = dataService.getUserByEmail(cleanEmail);
@@ -52,7 +58,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return {
         success: false,
         role: 'STUDENT',
-        error: 'Invalid credentials. No college account registered with this email address.',
+        error: 'Invalid college email or password. Please verify your credentials or contact administration.',
       };
     }
 
@@ -64,7 +70,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }
 
-    // Role is automatically retrieved from the verified record
+    // Role verification: If student tries logging in on professor tab or vice versa
+    if (targetRole && user.role !== targetRole) {
+      return {
+        success: false,
+        role: user.role,
+        error: `Access Denied: This account is authorized as a ${user.role}. Please select the ${user.role} login tab.`,
+      };
+    }
+
+    // Save session
     setCurrentUser(user);
     localStorage.setItem(AUTH_STORAGE_KEY, user.userId);
 
@@ -74,10 +89,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   };
 
-  const registerUser = async (userData: Omit<User, 'userId' | 'createdAt'>): Promise<{ success: boolean; user?: User; error?: string }> => {
+  const validateStudent = async (identifier: string) => {
+    await new Promise((res) => setTimeout(res, 300));
+    return dataService.validateStudentRecord(identifier);
+  };
+
+  const registerStudentAccount = async (params: {
+    recordId: string;
+    collegeEmail: string;
+    phone: string;
+    password?: string;
+  }): Promise<{ success: boolean; user?: User; error?: string }> => {
     try {
-      await new Promise((res) => setTimeout(res, 300));
-      const newUser = dataService.createUser(userData);
+      await new Promise((res) => setTimeout(res, 400));
+      const newUser = dataService.completeStudentRegistration(params);
       setCurrentUser(newUser);
       localStorage.setItem(AUTH_STORAGE_KEY, newUser.userId);
       return { success: true, user: newUser };
@@ -93,12 +118,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const resetPassword = async (email: string): Promise<{ success: boolean; message: string }> => {
-    await new Promise((res) => setTimeout(res, 400));
+    await new Promise((res) => setTimeout(res, 350));
     const user = dataService.getUserByEmail(email);
     if (!user) {
       return {
         success: false,
-        message: 'No account found with this college email address.',
+        message: 'No registered college account found with this email address.',
       };
     }
     return {
@@ -107,12 +132,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   };
 
-  const switchUserForDemo = (email: string) => {
-    const user = dataService.getUserByEmail(email);
-    if (user && user.active) {
+  const changePassword = async (oldPass: string, newPass: string): Promise<{ success: boolean; message: string }> => {
+    if (!currentUser) throw new Error('Not authenticated');
+    await new Promise((res) => setTimeout(res, 300));
+    return dataService.changePassword(currentUser.userId, oldPass, newPass);
+  };
+
+  const updateProfile = async (updates: Partial<User>): Promise<User> => {
+    if (!currentUser) throw new Error('Not authenticated');
+    const updated = dataService.updateUserProfile(currentUser.userId, updates);
+    setCurrentUser(updated);
+    return updated;
+  };
+
+  const switchUserForDemo = (email: string): boolean => {
+    const user = dataService.getUsers().find((u) => u.email.toLowerCase() === email.toLowerCase());
+    if (user) {
       setCurrentUser(user);
       localStorage.setItem(AUTH_STORAGE_KEY, user.userId);
+      return true;
     }
+    return false;
   };
 
   return (
@@ -123,9 +163,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isAuthenticated: Boolean(currentUser),
         isLoading,
         login,
-        registerUser,
+        validateStudent,
+        registerStudentAccount,
         logout,
         resetPassword,
+        changePassword,
+        updateProfile,
         switchUserForDemo,
       }}
     >

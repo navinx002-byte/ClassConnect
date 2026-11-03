@@ -15,9 +15,11 @@ export type NotificationType =
   | 'CLASS_POSTPONED'
   | 'STUDENT_MARKED_ABSENT'
   | 'PROFESSOR_ANNOUNCEMENT'
+  | 'TIMETABLE_SAVED'
   | 'TIMETABLE_PUBLISHED'
   | 'TIMETABLE_UPDATED'
-  | 'ATTENDANCE_WARNING';
+  | 'ATTENDANCE_WARNING'
+  | 'SUPPORT_REPLY';
 
 export interface User {
   userId: string;
@@ -27,9 +29,34 @@ export interface User {
   departmentId: string;
   studentGroupId?: string;
   rollNumber?: string;
+  usn?: string;
+  registerNumber?: string;
+  admissionNumber?: string;
+  degree?: string;
+  semester?: string;
   phone?: string;
+  profilePhoto?: string;
   active: boolean;
   createdAt: string;
+}
+
+// Preloaded college student record for secure registration validation
+export interface StudentRecord {
+  recordId: string;
+  usn: string;
+  registerNumber: string;
+  admissionNumber: string;
+  name: string;
+  collegeEmail: string;
+  departmentId: string;
+  departmentName: string;
+  degree: string; // e.g. "Master of Computer Applications (MCA)"
+  semester: string; // e.g. "1"
+  section: string; // e.g. "A"
+  isRegistered: boolean;
+  registered?: boolean;
+  registeredUserId?: string;
+  registeredAt?: string;
 }
 
 export interface Department {
@@ -46,6 +73,7 @@ export interface Subject {
   professorId: string;
   defaultRoom: string;
   creditHours?: number;
+  credits?: number;
 }
 
 export interface StudentSubject {
@@ -100,6 +128,7 @@ export interface ClassSession {
   room: string;
   status: ClassStatus;
   version: number;
+  isFinalized?: boolean;
   postponedUntil?: string;
   cancellationReason?: string;
   rescheduleReason?: string;
@@ -137,15 +166,19 @@ export interface ChangeLog {
 
 export interface NotificationItem {
   notificationId: string;
+  id?: string;
   recipientId: string;
   recipientRole?: UserRole;
   title: string;
   message: string;
+  body?: string;
   type: NotificationType;
   sessionId?: string;
   subjectId?: string;
+  targetPage?: string;
   read: boolean;
   createdAt: string;
+  timestamp?: string;
   deliveryStatus: 'SENT' | 'DELIVERED' | 'FAILED';
 }
 
@@ -160,7 +193,7 @@ export interface DeviceToken {
 export interface ReminderJob {
   reminderId: string;
   sessionId: string;
-  scheduledAt: string;
+  scheduledAt: string; // ISO or HH:MM
   sessionVersion: number;
   status: 'SCHEDULED' | 'INVALIDATED' | 'EXECUTED';
 }
@@ -173,7 +206,60 @@ export interface Announcement {
   subjectName: string;
   title: string;
   message: string;
+  attachmentName?: string;
+  attachmentUrl?: string;
   createdAt: string;
+}
+
+export interface QuestionPaper {
+  paperId: string;
+  departmentId: string;
+  semester: string;
+  academicYear: string;
+  subjectId: string;
+  subjectName: string;
+  subjectCode: string;
+  title: string;
+  fileName: string;
+  fileDataUrl: string;
+  fileUrl?: string;
+  fileSizeFormatted: string;
+  fileSize?: string;
+  uploadedAt: string;
+  uploadedBy: string;
+}
+
+export interface StudyMaterial {
+  materialId: string;
+  departmentId: string;
+  semester: string;
+  subjectId: string;
+  subjectName: string;
+  subjectCode: string;
+  title: string;
+  description: string;
+  fileName: string;
+  fileDataUrl: string;
+  fileUrl?: string;
+  fileSizeFormatted: string;
+  fileSize?: string;
+  uploadedAt: string;
+  uploadedBy: string;
+}
+
+export interface SupportRequest {
+  requestId: string;
+  studentId: string;
+  studentName: string;
+  studentEmail?: string;
+  usn: string;
+  category: 'ACADEMIC' | 'ATTENDANCE_CORRECTION' | 'EXAMINATION' | 'FEE_PAYMENT' | 'TECHNICAL' | 'OTHER';
+  subject: string;
+  message: string;
+  status: 'OPEN' | 'IN_PROGRESS' | 'RESOLVED';
+  createdAt: string;
+  adminResponse?: string;
+  resolvedAt?: string;
 }
 
 export interface CollegeSettings {

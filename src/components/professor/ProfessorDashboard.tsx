@@ -16,16 +16,33 @@ import {
   Users,
   Megaphone,
   PlusCircle,
+  ArrowLeft,
+  Lock,
+  LogOut,
+  ShieldCheck,
 } from 'lucide-react';
 import type { ClassSession } from '../../types';
 
 interface ProfessorDashboardProps {
   activeTab: string;
+  onNavigate?: (tab: string) => void;
 }
 
-export const ProfessorDashboard: React.FC<ProfessorDashboardProps> = ({ activeTab }) => {
-  const { currentUser } = useAuth();
+export const ProfessorDashboard: React.FC<ProfessorDashboardProps> = ({ activeTab, onNavigate }) => {
+  const { currentUser, logout, changePassword } = useAuth();
   const professorId = currentUser?.userId || 'user_prof_sharma';
+
+  const navigateTo = (tab: string) => {
+    if (onNavigate) {
+      onNavigate(tab);
+    }
+  };
+
+  const [currentPass, setCurrentPass] = useState('');
+  const [newPass, setNewPass] = useState('');
+  const [confirmPass, setConfirmPass] = useState('');
+  const [passError, setPassError] = useState<string | null>(null);
+  const [passSuccess, setPassSuccess] = useState<string | null>(null);
 
   const [, setRefreshTrigger] = useState(0);
   const [selectedSessionForAttendance, setSelectedSessionForAttendance] = useState<string | null>(null);
@@ -70,10 +87,224 @@ export const ProfessorDashboard: React.FC<ProfessorDashboardProps> = ({ activeTa
     }
   };
 
+  // Classes Tab
+  if (activeTab === 'classes') {
+    return (
+      <div className="space-y-6">
+        <button
+          onClick={() => navigateTo('dashboard')}
+          className="inline-flex items-center gap-1.5 text-xs font-bold text-[#173D72] hover:underline"
+        >
+          <ArrowLeft className="w-4 h-4" /> Back to Faculty Dashboard
+        </button>
+
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-bold text-[#173D72]">Today's Scheduled Lectures</h1>
+            <p className="text-xs text-gray-500 mt-1">
+              Your lectures for today with quick attendance and instant rescheduling options
+            </p>
+          </div>
+          <span className="text-xs font-semibold px-2.5 py-1 rounded-md bg-blue-50 text-[#173D72] border border-blue-200">
+            {todaySessions.length} sessions assigned
+          </span>
+        </div>
+
+        <div className="space-y-3.5">
+          {todaySessions.length === 0 ? (
+            <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-xs text-gray-400">
+              No classes scheduled for you today.
+            </div>
+          ) : (
+            todaySessions.map((session) => {
+              const sub = dataService.getSubjectById(session.subjectId);
+              return (
+                <div
+                  key={session.sessionId}
+                  className="bg-white rounded-xl border border-gray-200 p-5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                >
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <h3 className="text-sm font-bold text-gray-900">{sub?.name}</h3>
+                      <span className="text-xs text-gray-500 font-mono">({sub?.code})</span>
+                      {getStatusBadge(session.status)}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-gray-600 mt-2 font-medium">
+                      <span className="flex items-center gap-1">
+                        <Clock className="w-3.5 h-3.5 text-[#173D72]" /> {session.startTime} - {session.endTime}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <MapPin className="w-3.5 h-3.5 text-gray-400" /> {session.room}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => setSelectedSessionForAttendance(session.sessionId)}
+                      className="px-3.5 py-1.5 font-bold text-xs bg-[#173D72] text-white hover:bg-blue-900 rounded-lg flex items-center gap-1.5"
+                    >
+                      <CheckSquare className="w-3.5 h-3.5" /> Mark Attendance
+                    </button>
+                    <button
+                      onClick={() => setSessionToReschedule(session)}
+                      className="px-3 py-1.5 font-bold text-xs bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg flex items-center gap-1"
+                    >
+                      <History className="w-3.5 h-3.5" /> Reschedule
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Profile Tab
+  if (activeTab === 'profile') {
+    const handleProfChangePassword = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setPassError(null);
+      setPassSuccess(null);
+      if (newPass.length < 6) {
+        setPassError('Password must be at least 6 characters long');
+        return;
+      }
+      if (newPass !== confirmPass) {
+        setPassError('New passwords do not match');
+        return;
+      }
+      try {
+        const success = await changePassword(currentPass, newPass);
+        if (success) {
+          setPassSuccess('Password updated successfully!');
+          setCurrentPass('');
+          setNewPass('');
+          setConfirmPass('');
+        } else {
+          setPassError('Current password is incorrect');
+        }
+      } catch {
+        setPassError('Failed to change password. Verify your current password.');
+      }
+    };
+
+    return (
+      <div className="space-y-6">
+        <button
+          onClick={() => navigateTo('dashboard')}
+          className="inline-flex items-center gap-1.5 text-xs font-bold text-[#173D72] hover:underline"
+        >
+          <ArrowLeft className="w-4 h-4" /> Back to Faculty Dashboard
+        </button>
+
+        <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-xs">
+          <div className="flex flex-col sm:flex-row items-center gap-5">
+            <div className="w-20 h-20 rounded-full bg-[#173D72] text-white flex items-center justify-center text-2xl font-bold shadow-md">
+              {currentUser?.name?.charAt(0) || 'P'}
+            </div>
+            <div className="text-center sm:text-left">
+              <h2 className="text-xl font-extrabold text-[#173D72]">{currentUser?.name}</h2>
+              <div className="text-xs font-semibold text-gray-500 font-mono mt-0.5">
+                Faculty ID: {currentUser?.userId}
+              </div>
+              <div className="inline-flex items-center gap-1.5 text-xs text-blue-700 bg-blue-50 px-2.5 py-0.5 rounded-full mt-2 font-medium border border-blue-200">
+                <ShieldCheck className="w-3.5 h-3.5" /> Department Faculty Member
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-xs space-y-4">
+          <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Faculty Information</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+            <div className="p-3 bg-[#F5F7FA] rounded-lg border border-gray-200">
+              <span className="text-gray-400 font-bold uppercase text-[10px]">Department</span>
+              <p className="font-bold text-gray-800 mt-0.5">Department of Computer Applications (MCA)</p>
+            </div>
+            <div className="p-3 bg-[#F5F7FA] rounded-lg border border-gray-200">
+              <span className="text-gray-400 font-bold uppercase text-[10px]">Official College Email</span>
+              <p className="font-bold text-gray-800 mt-0.5 font-mono">{currentUser?.email}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-xs space-y-4">
+          <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+            <Lock className="w-4 h-4 text-[#173D72]" /> Change Password
+          </h3>
+          {passError && <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs font-bold text-red-700">{passError}</div>}
+          {passSuccess && <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs font-bold text-emerald-800">{passSuccess}</div>}
+
+          <form onSubmit={handleProfChangePassword} className="space-y-3 text-xs">
+            <div>
+              <label className="block text-gray-600 font-bold mb-1">Current Password</label>
+              <input
+                type="password"
+                required
+                value={currentPass}
+                onChange={(e) => setCurrentPass(e.target.value)}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+              />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-gray-600 font-bold mb-1">New Password</label>
+                <input
+                  type="password"
+                  required
+                  placeholder="Min 6 characters"
+                  value={newPass}
+                  onChange={(e) => setNewPass(e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-gray-600 font-bold mb-1">Confirm New Password</label>
+                <input
+                  type="password"
+                  required
+                  placeholder="Re-enter password"
+                  value={confirmPass}
+                  onChange={(e) => setConfirmPass(e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                />
+              </div>
+            </div>
+            <button
+              type="submit"
+              className="bg-[#173D72] text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-900 transition-colors"
+            >
+              Update Password
+            </button>
+          </form>
+        </div>
+
+        <div className="flex justify-end">
+          <button
+            onClick={logout}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-red-300 text-red-600 text-xs font-bold hover:bg-red-50 transition-colors"
+          >
+            <LogOut className="w-4 h-4" /> Sign Out of ClassConnect
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // Timetable view
   if (activeTab === 'timetable') {
     return (
       <div className="space-y-6">
+        <button
+          onClick={() => navigateTo('dashboard')}
+          className="inline-flex items-center gap-1.5 text-xs font-bold text-[#173D72] hover:underline"
+        >
+          <ArrowLeft className="w-4 h-4" /> Back to Faculty Dashboard
+        </button>
+
         <div>
           <h1 className="text-xl font-bold text-[#173D72]">Faculty Timetable Matrix</h1>
           <p className="text-xs text-gray-500 mt-1">
@@ -97,6 +328,13 @@ export const ProfessorDashboard: React.FC<ProfessorDashboardProps> = ({ activeTa
   if (activeTab === 'reschedule') {
     return (
       <div className="space-y-6">
+        <button
+          onClick={() => navigateTo('dashboard')}
+          className="inline-flex items-center gap-1.5 text-xs font-bold text-[#173D72] hover:underline"
+        >
+          <ArrowLeft className="w-4 h-4" /> Back to Faculty Dashboard
+        </button>
+
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h1 className="text-xl font-bold text-[#173D72]">Instant Rescheduling Hub</h1>
@@ -154,6 +392,13 @@ export const ProfessorDashboard: React.FC<ProfessorDashboardProps> = ({ activeTa
   if (activeTab === 'attendance') {
     return (
       <div className="space-y-6">
+        <button
+          onClick={() => navigateTo('dashboard')}
+          className="inline-flex items-center gap-1.5 text-xs font-bold text-[#173D72] hover:underline"
+        >
+          <ArrowLeft className="w-4 h-4" /> Back to Faculty Dashboard
+        </button>
+
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h1 className="text-xl font-bold text-[#173D72]">Submit Class Attendance</h1>
@@ -223,6 +468,13 @@ export const ProfessorDashboard: React.FC<ProfessorDashboardProps> = ({ activeTa
   if (activeTab === 'announcements') {
     return (
       <div className="space-y-6">
+        <button
+          onClick={() => navigateTo('dashboard')}
+          className="inline-flex items-center gap-1.5 text-xs font-bold text-[#173D72] hover:underline"
+        >
+          <ArrowLeft className="w-4 h-4" /> Back to Faculty Dashboard
+        </button>
+
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h1 className="text-xl font-bold text-[#173D72]">Manage Announcements</h1>

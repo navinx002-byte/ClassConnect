@@ -63,11 +63,11 @@ const MainApp: React.FC = () => {
   const renderDashboard = () => {
     switch (role) {
       case 'STUDENT':
-        return <StudentDashboard activeTab={currentTab} />;
+        return <StudentDashboard activeTab={currentTab} onNavigate={setCurrentTab} />;
       case 'PROFESSOR':
-        return <ProfessorDashboard activeTab={currentTab} />;
+        return <ProfessorDashboard activeTab={currentTab} onNavigate={setCurrentTab} />;
       case 'ADMIN':
-        return <AdminDashboard activeTab={currentTab} />;
+        return <AdminDashboard activeTab={currentTab} onNavigate={setCurrentTab} />;
       default:
         return (
           <div className="p-8 text-center text-gray-500">

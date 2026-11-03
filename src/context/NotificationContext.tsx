@@ -36,17 +36,54 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const isPushSupported = typeof window !== 'undefined' && 'Notification' in window;
 
-  const triggerPhoneNotification = useCallback((title: string, body: string) => {
-    // 1. Native Web/Mobile Push Notification
-    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-      try {
-        new Notification(title, {
-          body,
-          icon: '/favicon.ico',
-          badge: '/favicon.ico',
+  useEffect(() => {
+    // Register Service Worker for Android status bar notifications
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker
+        .register('/sw.js')
+        .then((reg) => {
+          console.log('ClassConnect Service Worker registered for Android Push:', reg.scope);
+        })
+        .catch((err) => {
+          console.warn('Service Worker registration skipped:', err);
         });
-      } catch (err) {
-        console.warn('System push error:', err);
+    }
+  }, []);
+
+  const triggerPhoneNotification = useCallback((title: string, body: string) => {
+    // 1. Android / Web Status Bar Notification via Service Worker (preferred on mobile)
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.ready
+          .then((registration) => {
+            registration.showNotification(title, {
+              body,
+              icon: '/favicon.svg',
+              badge: '/favicon.svg',
+              tag: 'classconnect-alert-' + Date.now(),
+            });
+          })
+          .catch(() => {
+            try {
+              new Notification(title, {
+                body,
+                icon: '/favicon.svg',
+                badge: '/favicon.svg',
+              });
+            } catch (err) {
+              console.warn('Fallback notification failed:', err);
+            }
+          });
+      } else {
+        try {
+          new Notification(title, {
+            body,
+            icon: '/favicon.svg',
+            badge: '/favicon.svg',
+          });
+        } catch (err) {
+          console.warn('System push error:', err);
+        }
       }
     }
 

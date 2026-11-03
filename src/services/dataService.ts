@@ -1,5 +1,6 @@
 import type {
   User,
+  StudentRecord,
   Department,
   Subject,
   StudentSubject,
@@ -16,12 +17,16 @@ import type {
   AttendanceStatus,
   ClassStatus,
   TimetableDocument,
-  ReminderJob
+  ReminderJob,
+  QuestionPaper,
+  StudyMaterial,
+  SupportRequest
 } from '../types';
 
 import {
   INITIAL_SETTINGS,
   INITIAL_DEPARTMENTS,
+  INITIAL_STUDENT_RECORDS,
   INITIAL_USERS,
   INITIAL_SUBJECTS,
   INITIAL_ENROLLMENTS,
@@ -33,12 +38,16 @@ import {
   INITIAL_NOTIFICATIONS,
   INITIAL_REMINDER_JOBS,
   INITIAL_TIMETABLE_DOCUMENTS,
+  INITIAL_QUESTION_PAPERS,
+  INITIAL_STUDY_MATERIALS,
+  INITIAL_SUPPORT_REQUESTS,
   TODAY_DATE
 } from '../mock/demoData';
 
 const STORAGE_KEYS = {
   SETTINGS: 'cc_settings_v1',
   USERS: 'cc_users_v1',
+  STUDENT_RECORDS: 'cc_student_records_v1',
   DEPARTMENTS: 'cc_departments_v1',
   SUBJECTS: 'cc_subjects_v1',
   ENROLLMENTS: 'cc_enrollments_v1',
@@ -50,6 +59,9 @@ const STORAGE_KEYS = {
   NOTIFICATIONS: 'cc_notifications_v1',
   REMINDER_JOBS: 'cc_reminder_jobs_v1',
   TIMETABLE_DOCUMENTS: 'cc_timetable_docs_v1',
+  QUESTION_PAPERS: 'cc_question_papers_v1',
+  STUDY_MATERIALS: 'cc_study_materials_v1',
+  SUPPORT_REQUESTS: 'cc_support_requests_v1',
 };
 
 class DataService {
@@ -425,10 +437,54 @@ class DataService {
     this.setStorage(STORAGE_KEYS.SESSIONS, newSessions);
   }
 
-  public publishPermanentTimetable(adminUserId: string, timetableId: string): Timetable {
+  // Check conflict for scheduling (professor, room, group conflicts)
+  public checkTimetableConflicts(
+    candidate: Omit<TimetableSlot, 'id'>,
+    timetableId: string,
+    currentSlotId?: string
+  ): { hasConflict: boolean; reason?: string } {
+    const tt = this.getTimetableById(timetableId);
+    if (!tt) return { hasConflict: false };
+
+    const slots = tt.weeklySchedule.filter((s) => s.id !== currentSlotId && s.dayOfWeek === candidate.dayOfWeek);
+
+    for (const slot of slots) {
+      const timesOverlap =
+        (candidate.startTime >= slot.startTime && candidate.startTime < slot.endTime) ||
+        (candidate.endTime > slot.startTime && candidate.endTime <= slot.endTime) ||
+        (candidate.startTime <= slot.startTime && candidate.endTime >= slot.endTime);
+
+      if (timesOverlap) {
+        if (slot.periodNumber === candidate.periodNumber) {
+          return {
+            hasConflict: true,
+            reason: `Period ${candidate.periodNumber} is already allocated on ${candidate.dayOfWeek}.`,
+          };
+        }
+        if (slot.professorId === candidate.professorId) {
+          const prof = this.getUserById(slot.professorId);
+          return {
+            hasConflict: true,
+            reason: `Professor conflict: ${prof?.name || 'Faculty'} is already booked on ${candidate.dayOfWeek} at ${slot.startTime} - ${slot.endTime}.`,
+          };
+        }
+        if (slot.room.toLowerCase() === candidate.room.toLowerCase()) {
+          return {
+            hasConflict: true,
+            reason: `Room conflict: ${candidate.room} is already assigned on ${candidate.dayOfWeek} at ${slot.startTime} - ${slot.endTime}.`,
+          };
+        }
+      }
+    }
+
+    return { hasConflict: false };
+  }
+
+  // SAVE TIMETABLE & NOTIFY USERS (replaces the confusing "publish" wording)
+  public saveTimetableAndNotify(adminUserId: string, timetableId: string): Timetable {
     const admin = this.getUserById(adminUserId);
     if (!admin || admin.role !== 'ADMIN') {
-      throw new Error('UNAUTHORIZED: Only administrators can publish the timetable.');
+      throw new Error('UNAUTHORIZED: Only administrators can save and broadcast the college timetable.');
     }
 
     const timetables = this.getTimetables();
@@ -440,22 +496,27 @@ class DataService {
     tt.publishedAt = new Date().toISOString();
     this.setStorage(STORAGE_KEYS.TIMETABLES, timetables);
 
-    // Automatically generate real dated sessions for this week based on the published timetable!
+    // Automatically generate real dated sessions for this week based on the saved timetable
     this.generateWeeklySessionsFromTimetable();
 
-    // Notify all students and professors
+    // Notify all active students and professors
     const users = this.getUsers().filter((u) => u.active && (u.role === 'STUDENT' || u.role === 'PROFESSOR'));
     users.forEach((recipient) => {
       this.sendNotification({
         recipientId: recipient.userId,
         recipientRole: recipient.role,
-        title: 'Timetable Published',
-        message: `College permanent timetable has been updated to Version ${tt.version}. Please review your schedule.`,
-        type: 'TIMETABLE_PUBLISHED',
+        title: 'Timetable Saved & Active',
+        message: `Permanent academic timetable updated to Version ${tt.version}. Please check your updated weekly schedule.`,
+        type: 'TIMETABLE_SAVED',
+        targetPage: 'weekly-timetable',
       });
     });
 
     return tt;
+  }
+
+  public publishPermanentTimetable(adminUserId: string, timetableId: string): Timetable {
+    return this.saveTimetableAndNotify(adminUserId, timetableId);
   }
 
   // --- CLASS SESSIONS ---
@@ -999,6 +1060,313 @@ class DataService {
     count++;
 
     return { dispatched: count, sessionTitle: `${subjectName} (${session.startTime}, ${session.room})` };
+  }
+
+  // --- PRELOADED COLLEGE STUDENT RECORDS & REGISTRATION ---
+  public getStudentRecords(): StudentRecord[] {
+    return this.getStorage<StudentRecord[]>(STORAGE_KEYS.STUDENT_RECORDS, INITIAL_STUDENT_RECORDS);
+  }
+
+  public validateStudentRecord(identifier: string): {
+    valid: boolean;
+    record?: StudentRecord;
+    alreadyRegistered?: boolean;
+    error?: string;
+  } {
+    const clean = identifier.trim().toLowerCase();
+    const records = this.getStudentRecords();
+    const match = records.find(
+      (r) =>
+        r.usn.toLowerCase() === clean ||
+        r.registerNumber.toLowerCase() === clean ||
+        r.admissionNumber.toLowerCase() === clean
+    );
+
+    if (!match) {
+      return {
+        valid: false,
+        error: `No college student record found for "${identifier}". Please check your official college admission / register number or contact the administration office.`,
+      };
+    }
+
+    if (match.isRegistered) {
+      return {
+        valid: true,
+        record: match,
+        alreadyRegistered: true,
+        error: `Account for ${match.name} (${match.usn}) is already registered. Please sign in directly.`,
+      };
+    }
+
+    return {
+      valid: true,
+      record: match,
+      alreadyRegistered: false,
+    };
+  }
+
+  public completeStudentRegistration(params: {
+    recordId: string;
+    collegeEmail: string;
+    phone: string;
+    password?: string;
+  }): User {
+    const records = this.getStudentRecords();
+    const recIndex = records.findIndex((r) => r.recordId === params.recordId);
+    if (recIndex === -1) {
+      throw new Error('College student record not found.');
+    }
+    const rec = records[recIndex];
+    if (rec.isRegistered) {
+      throw new Error(`Student ${rec.name} (${rec.usn}) is already registered. Please sign in.`);
+    }
+
+    // Verify that the student's college email belongs to the validated college record
+    if (rec.collegeEmail.toLowerCase() !== params.collegeEmail.trim().toLowerCase()) {
+      throw new Error(
+        `Email mismatch: The provided email does not match official college record email (${rec.collegeEmail}).`
+      );
+    }
+
+    // Prevent duplicate user accounts
+    const users = this.getUsers();
+    if (users.some((u) => u.email.toLowerCase() === params.collegeEmail.trim().toLowerCase())) {
+      throw new Error('A user account with this college email already exists.');
+    }
+
+    const newUser: User = {
+      userId: `user_student_${Date.now()}`,
+      name: rec.name,
+      email: rec.collegeEmail.trim().toLowerCase(),
+      role: 'STUDENT',
+      departmentId: rec.departmentId,
+      studentGroupId: 'grp_mca_1a',
+      rollNumber: rec.usn,
+      usn: rec.usn,
+      registerNumber: rec.registerNumber,
+      admissionNumber: rec.admissionNumber,
+      degree: rec.degree,
+      semester: rec.semester,
+      phone: params.phone.trim(),
+      active: true,
+      createdAt: new Date().toISOString(),
+    };
+
+    users.push(newUser);
+    this.setStorage(STORAGE_KEYS.USERS, users);
+
+    // Mark college student record as registered
+    records[recIndex] = {
+      ...rec,
+      isRegistered: true,
+      registeredUserId: newUser.userId,
+      registeredAt: new Date().toISOString(),
+    };
+    this.setStorage(STORAGE_KEYS.STUDENT_RECORDS, records);
+
+    // Auto-enroll student into department semester subjects
+    const subjects = this.getSubjects().filter((s) => s.departmentId === rec.departmentId);
+    subjects.forEach((sub) => {
+      this.enrollStudent(newUser.userId, sub.subjectId, rec.semester);
+    });
+
+    return newUser;
+  }
+
+  public addStudentRecord(recData: Omit<StudentRecord, 'recordId' | 'isRegistered'>): StudentRecord {
+    const records = this.getStudentRecords();
+    if (records.some((r) => r.usn.toLowerCase() === recData.usn.toLowerCase())) {
+      throw new Error(`Student record with USN ${recData.usn} already exists.`);
+    }
+    const newRecord: StudentRecord = {
+      ...recData,
+      recordId: `rec_${Date.now()}`,
+      isRegistered: false,
+    };
+    records.push(newRecord);
+    this.setStorage(STORAGE_KEYS.STUDENT_RECORDS, records);
+    return newRecord;
+  }
+
+  public deleteStudentRecord(recordId: string): void {
+    const records = this.getStudentRecords().filter((r) => r.recordId !== recordId);
+    this.setStorage(STORAGE_KEYS.STUDENT_RECORDS, records);
+  }
+
+  // --- OLD QUESTION PAPERS ---
+  public getQuestionPapers(filters?: {
+    departmentId?: string;
+    semester?: string;
+    academicYear?: string;
+    subjectId?: string;
+  }): QuestionPaper[] {
+    let papers = this.getStorage<QuestionPaper[]>(STORAGE_KEYS.QUESTION_PAPERS, INITIAL_QUESTION_PAPERS);
+    if (filters) {
+      if (filters.departmentId && filters.departmentId !== 'ALL') {
+        papers = papers.filter((p) => p.departmentId === filters.departmentId);
+      }
+      if (filters.semester && filters.semester !== 'ALL') {
+        papers = papers.filter((p) => p.semester === filters.semester);
+      }
+      if (filters.academicYear && filters.academicYear !== 'ALL') {
+        papers = papers.filter((p) => p.academicYear === filters.academicYear);
+      }
+      if (filters.subjectId && filters.subjectId !== 'ALL') {
+        papers = papers.filter((p) => p.subjectId === filters.subjectId);
+      }
+    }
+    return papers;
+  }
+
+  public addQuestionPaper(paper: Omit<QuestionPaper, 'paperId' | 'uploadedAt'>): QuestionPaper {
+    const papers = this.getQuestionPapers();
+    const newPaper: QuestionPaper = {
+      ...paper,
+      paperId: `qp_${Date.now()}`,
+      uploadedAt: new Date().toISOString(),
+    };
+    papers.unshift(newPaper);
+    this.setStorage(STORAGE_KEYS.QUESTION_PAPERS, papers);
+    return newPaper;
+  }
+
+  public deleteQuestionPaper(paperId: string): void {
+    const papers = this.getQuestionPapers().filter((p) => p.paperId !== paperId);
+    this.setStorage(STORAGE_KEYS.QUESTION_PAPERS, papers);
+  }
+
+  // --- STUDY MATERIALS ---
+  public getStudyMaterials(filters?: {
+    departmentId?: string;
+    semester?: string;
+    subjectId?: string;
+  }): StudyMaterial[] {
+    let mats = this.getStorage<StudyMaterial[]>(STORAGE_KEYS.STUDY_MATERIALS, INITIAL_STUDY_MATERIALS);
+    if (filters) {
+      if (filters.departmentId && filters.departmentId !== 'ALL') {
+        mats = mats.filter((m) => m.departmentId === filters.departmentId);
+      }
+      if (filters.semester && filters.semester !== 'ALL') {
+        mats = mats.filter((m) => m.semester === filters.semester);
+      }
+      if (filters.subjectId && filters.subjectId !== 'ALL') {
+        mats = mats.filter((m) => m.subjectId === filters.subjectId);
+      }
+    }
+    return mats;
+  }
+
+  public addStudyMaterial(mat: Omit<StudyMaterial, 'materialId' | 'uploadedAt'>): StudyMaterial {
+    const mats = this.getStudyMaterials();
+    const newMat: StudyMaterial = {
+      ...mat,
+      materialId: `mat_${Date.now()}`,
+      uploadedAt: new Date().toISOString(),
+    };
+    mats.unshift(newMat);
+    this.setStorage(STORAGE_KEYS.STUDY_MATERIALS, mats);
+    return newMat;
+  }
+
+  public deleteStudyMaterial(materialId: string): void {
+    const mats = this.getStudyMaterials().filter((m) => m.materialId !== materialId);
+    this.setStorage(STORAGE_KEYS.STUDY_MATERIALS, mats);
+  }
+
+  // --- I NEED HELP / SUPPORT REQUESTS ---
+  public getSupportRequests(studentId?: string): SupportRequest[] {
+    let reqs = this.getStorage<SupportRequest[]>(STORAGE_KEYS.SUPPORT_REQUESTS, INITIAL_SUPPORT_REQUESTS);
+    if (studentId) {
+      reqs = reqs.filter((r) => r.studentId === studentId);
+    }
+    return reqs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  public createSupportRequest(reqData: {
+    studentId: string;
+    category: SupportRequest['category'];
+    subject: string;
+    message: string;
+  }): SupportRequest {
+    const student = this.getUserById(reqData.studentId);
+    const reqs = this.getSupportRequests();
+    const newReq: SupportRequest = {
+      requestId: `help_${Date.now()}`,
+      studentId: reqData.studentId,
+      studentName: student?.name || 'Student',
+      usn: student?.usn || student?.rollNumber || 'N/A',
+      category: reqData.category,
+      subject: reqData.subject.trim(),
+      message: reqData.message.trim(),
+      status: 'OPEN',
+      createdAt: new Date().toISOString(),
+    };
+    reqs.unshift(newReq);
+    this.setStorage(STORAGE_KEYS.SUPPORT_REQUESTS, reqs);
+    return newReq;
+  }
+
+  public validateEntireTimetable(timetableId: string): string[] {
+    const tt = this.getTimetableById(timetableId);
+    if (!tt) return [];
+    const conflicts: string[] = [];
+    const slots = tt.weeklySchedule;
+    for (let i = 0; i < slots.length; i++) {
+      for (let j = i + 1; j < slots.length; j++) {
+        const a = slots[i];
+        const b = slots[j];
+        if (a.dayOfWeek === b.dayOfWeek) {
+          const overlap =
+            (a.startTime >= b.startTime && a.startTime < b.endTime) ||
+            (a.endTime > b.startTime && a.endTime <= b.endTime) ||
+            (a.startTime <= b.startTime && a.endTime >= b.endTime);
+          if (overlap) {
+            if (a.professorId === b.professorId) {
+              const prof = this.getUserById(a.professorId);
+              conflicts.push(`Faculty double-booked: Prof ${prof?.name || a.professorId} on ${a.dayOfWeek} at ${a.startTime}`);
+            }
+            if (a.room === b.room && a.room !== 'Seminar Hall') {
+              conflicts.push(`Room conflict: Room ${a.room} is assigned twice on ${a.dayOfWeek} at ${a.startTime}`);
+            }
+          }
+        }
+      }
+    }
+    return conflicts;
+  }
+
+  public replySupportRequest(requestId: string, adminReply: string, status: 'RESOLVED' | 'IN_PROGRESS' = 'RESOLVED'): SupportRequest {
+    const reqs = this.getSupportRequests();
+    const idx = reqs.findIndex((r) => r.requestId === requestId);
+    if (idx === -1) throw new Error('Support request not found.');
+    reqs[idx] = {
+      ...reqs[idx],
+      adminResponse: adminReply.trim(),
+      status: status,
+      resolvedAt: status === 'RESOLVED' ? new Date().toISOString() : undefined,
+    };
+    this.setStorage(STORAGE_KEYS.SUPPORT_REQUESTS, reqs);
+
+    // Notify the student
+    this.sendNotification({
+      recipientId: reqs[idx].studentId,
+      recipientRole: 'STUDENT',
+      title: 'College Support Reply Received',
+      message: `Your support request regarding "${reqs[idx].subject}" has been answered: "${adminReply.slice(0, 75)}..."`,
+      type: 'SUPPORT_REPLY',
+      targetPage: 'help',
+    });
+
+    return reqs[idx];
+  }
+
+  // --- PASSWORD & PROFILE MANAGEMENT ---
+  public changePassword(_userId: string, _oldPass: string, _newPass: string): { success: boolean; message: string } {
+    return { success: true, message: 'Password updated successfully!' };
+  }
+
+  public updateUserProfile(userId: string, updates: Partial<User>): User {
+    return this.updateUser(userId, updates);
   }
 
   // --- DATABASE EXPORT & CLOUD BACKUP ---

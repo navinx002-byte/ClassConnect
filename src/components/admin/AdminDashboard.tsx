@@ -16,17 +16,25 @@ import {
   UploadCloud,
   Search,
   Filter,
+  AlertTriangle,
 } from 'lucide-react';
 import type { TimetableSlot, DayOfWeek } from '../../types';
 
 interface AdminDashboardProps {
   activeTab: string;
+  onNavigate?: (tab: string) => void;
 }
 
-export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab }) => {
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab, onNavigate }) => {
   const { currentUser } = useAuth();
   const { triggerPhoneNotification } = useNotifications();
   const [, setRefreshTrigger] = useState(0);
+
+  const navigateTo = (tab: string) => {
+    if (onNavigate) {
+      onNavigate(tab);
+    }
+  };
 
   // Search & filter states
   const [userSearch, setUserSearch] = useState('');
@@ -54,6 +62,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab }) => 
   // File upload state for timetable
   const [timetableUploadError, setTimetableUploadError] = useState<string | null>(null);
   const [timetableUploadSuccess, setTimetableUploadSuccess] = useState<string | null>(null);
+  const [conflictWarnings, setConflictWarnings] = useState<string[]>([]);
+  const [showConflictModal, setShowConflictModal] = useState(false);
   const [isAddSlotModalOpen, setIsAddSlotModalOpen] = useState(false);
   const [newSlotDay, setNewSlotDay] = useState<DayOfWeek>('MONDAY');
   const [newSlotPeriod, setNewSlotPeriod] = useState(1);
@@ -61,6 +71,33 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab }) => 
   const [newSlotEnd, setNewSlotEnd] = useState('10:00');
   const [newSlotSubject, setNewSlotSubject] = useState('');
   const [newSlotRoom, setNewSlotRoom] = useState('');
+
+  // Preloaded Student Records State
+  const [isAddStudentRecordOpen, setIsAddStudentRecordOpen] = useState(false);
+  const [newStudentName, setNewStudentName] = useState('');
+  const [newStudentUsn, setNewStudentUsn] = useState('');
+  const [newStudentReg, setNewStudentReg] = useState('');
+  const [newStudentAdm, setNewStudentAdm] = useState('');
+  const [newStudentEmail, setNewStudentEmail] = useState('');
+  const [newStudentDept, setNewStudentDept] = useState('dept_mca');
+  const [newStudentDegree, setNewStudentDegree] = useState('MCA');
+  const [newStudentSemester, setNewStudentSemester] = useState(1);
+  const [studentRecordSearch, setStudentRecordSearch] = useState('');
+
+  // Question Papers Upload State
+  const [isAddPaperModalOpen, setIsAddPaperModalOpen] = useState(false);
+  const [newPaperTitle, setNewPaperTitle] = useState('');
+  const [newPaperDept, setNewPaperDept] = useState('dept_mca');
+  const [newPaperSem, setNewPaperSem] = useState(1);
+  const [newPaperYear, setNewPaperYear] = useState('2026-2027');
+  const [newPaperSubject, setNewPaperSubject] = useState('sub_mca_aos');
+  const [newPaperFileName, setNewPaperFileName] = useState('');
+  const [newPaperUrl, setNewPaperUrl] = useState('');
+
+  // Support Tickets State
+  const [replyingTicketId, setReplyingTicketId] = useState<string | null>(null);
+  const [ticketReplyText, setTicketReplyText] = useState('');
+  const [ticketReplyStatus, setTicketReplyStatus] = useState<'RESOLVED' | 'IN_PROGRESS'>('RESOLVED');
 
   // Handle Manual Add Slot
   const handleAddSlot = (e: React.FormEvent) => {
@@ -238,24 +275,120 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab }) => 
     reload();
   };
 
-  // Handle Publish Timetable
-  const handlePublishTimetable = () => {
+  // Handle Save Timetable and Notify Users (With Conflict Detection)
+  const handleSaveTimetableAndNotify = (ignoreConflicts = false) => {
     if (!currentUser) return;
+
+    // Check for conflicts
+    const conflicts = dataService.validateEntireTimetable(activeTimetable.timetableId);
+    if (conflicts.length > 0 && !ignoreConflicts) {
+      setConflictWarnings(conflicts);
+      setShowConflictModal(true);
+      return;
+    }
+
+    setShowConflictModal(false);
     const newVersion = (activeTimetable.version || 1) + 1;
-    dataService.publishPermanentTimetable(currentUser.userId, activeTimetable.timetableId);
+    dataService.saveTimetableAndNotify(
+      activeTimetable.timetableId,
+      `Admin saved timetable version ${newVersion}`
+    );
 
     // Automatically generate real class sessions for students & professors
     dataService.generateWeeklySessionsFromTimetable();
 
     // Trigger Phone Push Notification
     triggerPhoneNotification(
-      `📅 MCA Timetable Published (Version ${newVersion})`,
-      'The Department of Computer Applications MCA timetable is now active. Enrolled students and faculty have been notified.'
+      `📅 MCA Timetable Updated (v${newVersion})`,
+      'The Department MCA timetable has been saved. Sessions updated and notifications delivered to student devices.'
     );
 
     setTimetableUploadSuccess(
-      `Timetable Published to Version ${newVersion}! Sessions generated and notifications broadcasted to student & faculty devices.`
+      `Timetable successfully saved to Version ${newVersion}! Student schedules synchronized and notified.`
     );
+    reload();
+  };
+
+  // Add Preloaded Student Record
+  const handleAddStudentRecord = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newStudentName.trim() || !newStudentUsn.trim()) return;
+
+    dataService.addStudentRecord({
+      name: newStudentName.trim(),
+      usn: newStudentUsn.trim().toUpperCase(),
+      registerNumber: newStudentReg.trim().toUpperCase() || newStudentUsn.trim().toUpperCase(),
+      admissionNumber: newStudentAdm.trim() || newStudentUsn.trim().toUpperCase(),
+      departmentId: newStudentDept,
+      departmentName: 'Department of Computer Applications',
+      degree: newStudentDegree,
+      semester: String(newStudentSemester),
+      section: 'A',
+      collegeEmail: newStudentEmail.trim().toLowerCase(),
+    });
+
+    setIsAddStudentRecordOpen(false);
+    setNewStudentName('');
+    setNewStudentUsn('');
+    setNewStudentReg('');
+    setNewStudentAdm('');
+    setNewStudentEmail('');
+    reload();
+  };
+
+  // Delete Preloaded Student Record
+  const handleDeleteStudentRecord = (recordId: string) => {
+    if (confirm('Are you sure you want to remove this eligible student record?')) {
+      dataService.deleteStudentRecord(recordId);
+      reload();
+    }
+  };
+
+  // Add Question Paper
+  const handleAddQuestionPaper = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPaperTitle.trim() || !newPaperSubject) return;
+
+    const sub = subjects.find((s) => s.subjectId === newPaperSubject);
+
+    dataService.addQuestionPaper({
+      title: newPaperTitle.trim(),
+      departmentId: newPaperDept,
+      semester: String(newPaperSem),
+      academicYear: newPaperYear,
+      subjectId: newPaperSubject,
+      subjectCode: sub?.code || 'MCA',
+      subjectName: sub?.name || 'Subject',
+      fileDataUrl: newPaperUrl.trim() || '/mca_timetable_official.png',
+      fileUrl: newPaperUrl.trim() || '/mca_timetable_official.png',
+      fileName: newPaperFileName.trim() || `${sub?.code || 'QP'}_${newPaperYear}.pdf`,
+      fileSizeFormatted: '1.4 MB',
+      fileSize: '1.4 MB',
+      uploadedBy: currentUser?.name || 'College Admin',
+    });
+
+    setIsAddPaperModalOpen(false);
+    setNewPaperTitle('');
+    setNewPaperFileName('');
+    setNewPaperUrl('');
+    reload();
+  };
+
+  // Delete Question Paper
+  const handleDeleteQuestionPaper = (paperId: string) => {
+    if (confirm('Are you sure you want to delete this question paper?')) {
+      dataService.deleteQuestionPaper(paperId);
+      reload();
+    }
+  };
+
+  // Reply to Student Support Ticket
+  const handleReplySupportTicket = (requestId: string) => {
+    if (!ticketReplyText.trim()) return;
+
+    dataService.replySupportRequest(requestId, ticketReplyText.trim(), ticketReplyStatus);
+    setReplyingTicketId(null);
+    setTicketReplyText('');
     reload();
   };
 
@@ -716,11 +849,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab }) => 
             </button>
 
             <button
-              onClick={handlePublishTimetable}
-              className="px-4 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center gap-2 shadow-xs"
+              onClick={() => handleSaveTimetableAndNotify(false)}
+              className="px-4 py-2 text-xs font-bold bg-[#173D72] hover:bg-blue-900 text-white rounded-lg flex items-center gap-2 shadow-xs transition-colors"
             >
               <UploadCloud className="w-4 h-4" />
-              <span>Publish Timetable</span>
+              <span>SAVE TIMETABLE & NOTIFY USERS</span>
             </button>
           </div>
         </div>
@@ -1248,6 +1381,534 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab }) => 
   }
 
   // ==========================================
+  // TAB 7: PRELOADED ELIGIBLE STUDENT RECORDS
+  // ==========================================
+  if (activeTab === 'preloaded-students') {
+    const studentRecords = dataService.getStudentRecords();
+    const filteredRecords = studentRecords.filter(
+      (r) =>
+        r.name.toLowerCase().includes(studentRecordSearch.toLowerCase()) ||
+        r.usn.toLowerCase().includes(studentRecordSearch.toLowerCase()) ||
+        r.collegeEmail.toLowerCase().includes(studentRecordSearch.toLowerCase())
+    );
+
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-bold text-[#173D72]">Preloaded Student Records</h1>
+            <p className="text-xs text-gray-500 mt-1">
+              Official college registry of eligible students authorized to register ClassConnect accounts
+            </p>
+          </div>
+
+          <button
+            onClick={() => setIsAddStudentRecordOpen(true)}
+            className="px-4 py-2 text-xs font-bold bg-[#173D72] hover:bg-blue-900 text-white rounded-lg flex items-center gap-1.5 shadow-2xs self-start sm:self-auto"
+          >
+            <PlusCircle className="w-4 h-4" /> Add Eligible Student
+          </button>
+        </div>
+
+        {/* Search */}
+        <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-xs">
+          <div className="relative">
+            <Search className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
+            <input
+              type="text"
+              placeholder="Search by student name, USN, or college email..."
+              value={studentRecordSearch}
+              onChange={(e) => setStudentRecordSearch(e.target.value)}
+              className="w-full text-xs border border-gray-300 rounded-lg pl-9 pr-3 py-2 focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+            />
+          </div>
+        </div>
+
+        {/* Student Records Table */}
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-[#F5F7FA] border-b border-gray-200 text-gray-600 uppercase text-[11px]">
+                <tr>
+                  <th className="py-3 px-4 font-bold">Student Name</th>
+                  <th className="py-3 px-4 font-bold">College USN / Reg No</th>
+                  <th className="py-3 px-4 font-bold">Programme & Sem</th>
+                  <th className="py-3 px-4 font-bold">Official Email</th>
+                  <th className="py-3 px-4 font-bold">Registration Status</th>
+                  <th className="py-3 px-4 font-bold text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {filteredRecords.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-8 text-center text-gray-400">
+                      No eligible student records found matching the search.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredRecords.map((record) => (
+                    <tr key={record.recordId} className="hover:bg-gray-50/50">
+                      <td className="py-3 px-4 font-bold text-gray-900">{record.name}</td>
+                      <td className="py-3 px-4 font-mono font-semibold text-[#173D72]">
+                        {record.usn}
+                        {record.registerNumber !== record.usn && (
+                          <div className="text-[10px] text-gray-500 font-normal">{record.registerNumber}</div>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 text-gray-700">
+                        {record.degree} Sem {record.semester}
+                      </td>
+                      <td className="py-3 px-4 text-gray-600 font-mono text-[11px]">{record.collegeEmail}</td>
+                      <td className="py-3 px-4">
+                        {record.registered ? (
+                          <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" /> REGISTERED
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800">
+                            ELIGIBLE (NOT REGISTERED)
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 text-right">
+                        <button
+                          onClick={() => handleDeleteStudentRecord(record.recordId)}
+                          className="text-red-600 hover:text-red-800 font-bold text-[11px] hover:underline"
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Modal: Add Student Record */}
+        {isAddStudentRecordOpen && (
+          <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-xl border border-gray-200">
+              <h3 className="text-base font-bold text-[#173D72] mb-3">Preload Eligible Student Record</h3>
+              <p className="text-xs text-gray-500 mb-4">
+                Add an eligible student to the college database so they can complete registration with their official USN.
+              </p>
+              <form onSubmit={handleAddStudentRecord} className="space-y-3 text-xs">
+                <div>
+                  <label className="block text-gray-600 font-bold mb-1">Student Full Name</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Ramesh Kumar"
+                    value={newStudentName}
+                    onChange={(e) => setNewStudentName(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-gray-600 font-bold mb-1">College USN</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="1NN24MC006"
+                      value={newStudentUsn}
+                      onChange={(e) => setNewStudentUsn(e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 font-mono uppercase focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-gray-600 font-bold mb-1">Register / Admission No</label>
+                    <input
+                      type="text"
+                      placeholder="Optional"
+                      value={newStudentReg}
+                      onChange={(e) => setNewStudentReg(e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 font-mono focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-gray-600 font-bold mb-1">Programme / Degree</label>
+                    <input
+                      type="text"
+                      required
+                      value={newStudentDegree}
+                      onChange={(e) => setNewStudentDegree(e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-gray-600 font-bold mb-1">Semester</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={8}
+                      required
+                      value={newStudentSemester}
+                      onChange={(e) => setNewStudentSemester(Number(e.target.value))}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-gray-600 font-bold mb-1">Department</label>
+                  <select
+                    value={newStudentDept}
+                    onChange={(e) => setNewStudentDept(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                  >
+                    <option value="dept_mca">Department of Computer Applications (MCA)</option>
+                    <option value="dept_cse">Computer Science & Engineering</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-gray-600 font-bold mb-1">Official College Email</label>
+                  <input
+                    type="email"
+                    required
+                    placeholder="student@nmit.ac.in"
+                    value={newStudentEmail}
+                    onChange={(e) => setNewStudentEmail(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                  />
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-gray-100">
+                  <button
+                    type="button"
+                    onClick={() => setIsAddStudentRecordOpen(false)}
+                    className="px-3 py-1.5 font-bold text-gray-500 hover:bg-gray-100 rounded-lg"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-4 py-1.5 font-bold bg-[#173D72] hover:bg-blue-900 text-white rounded-lg"
+                  >
+                    Save Student Record
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ==========================================
+  // TAB 8: UPLOAD QUESTION PAPERS
+  // ==========================================
+  if (activeTab === 'admin-documents') {
+    const qpList = dataService.getQuestionPapers();
+
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-bold text-[#173D72]">Upload Old Question Papers</h1>
+            <p className="text-xs text-gray-500 mt-1">
+              Manage previous examination question papers for student revision and exam preparation
+            </p>
+          </div>
+
+          <button
+            onClick={() => setIsAddPaperModalOpen(true)}
+            className="px-4 py-2 text-xs font-bold bg-[#173D72] hover:bg-blue-900 text-white rounded-lg flex items-center gap-1.5 shadow-2xs self-start sm:self-auto"
+          >
+            <PlusCircle className="w-4 h-4" /> Add Question Paper
+          </button>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-[#F5F7FA] border-b border-gray-200 text-gray-600 uppercase text-[11px]">
+                <tr>
+                  <th className="py-3 px-4 font-bold">Paper Title</th>
+                  <th className="py-3 px-4 font-bold">Subject</th>
+                  <th className="py-3 px-4 font-bold">Year & Semester</th>
+                  <th className="py-3 px-4 font-bold">File</th>
+                  <th className="py-3 px-4 font-bold">Uploaded By</th>
+                  <th className="py-3 px-4 font-bold text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {qpList.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-8 text-center text-gray-400">
+                      No question papers uploaded yet.
+                    </td>
+                  </tr>
+                ) : (
+                  qpList.map((paper) => (
+                    <tr key={paper.paperId} className="hover:bg-gray-50/50">
+                      <td className="py-3 px-4 font-bold text-gray-900">{paper.title}</td>
+                      <td className="py-3 px-4 text-[#173D72] font-semibold">
+                        {paper.subjectName} ({paper.subjectCode})
+                      </td>
+                      <td className="py-3 px-4 text-gray-700">
+                        {paper.academicYear} • Sem {paper.semester}
+                      </td>
+                      <td className="py-3 px-4 text-gray-500 font-mono text-[11px]">{paper.fileName}</td>
+                      <td className="py-3 px-4 text-gray-600">{paper.uploadedBy}</td>
+                      <td className="py-3 px-4 text-right">
+                        <button
+                          onClick={() => handleDeleteQuestionPaper(paper.paperId)}
+                          className="text-red-600 hover:text-red-800 font-bold text-[11px] hover:underline"
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Modal: Add Question Paper */}
+        {isAddPaperModalOpen && (
+          <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-xl border border-gray-200">
+              <h3 className="text-base font-bold text-[#173D72] mb-3">Add Official Question Paper</h3>
+              <form onSubmit={handleAddQuestionPaper} className="space-y-3 text-xs">
+                <div>
+                  <label className="block text-gray-600 font-bold mb-1">Paper Title</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Advanced Operating Systems - End Sem Exam Dec 2026"
+                    value={newPaperTitle}
+                    onChange={(e) => setNewPaperTitle(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-gray-600 font-bold mb-1">Department</label>
+                  <select
+                    value={newPaperDept}
+                    onChange={(e) => setNewPaperDept(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                  >
+                    <option value="dept_mca">Department of Computer Applications (MCA)</option>
+                    <option value="dept_cse">Computer Science & Engineering</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-gray-600 font-bold mb-1">Subject</label>
+                  <select
+                    value={newPaperSubject}
+                    onChange={(e) => setNewPaperSubject(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                  >
+                    {subjects.map((s) => (
+                      <option key={s.subjectId} value={s.subjectId}>
+                        {s.name} ({s.code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-gray-600 font-bold mb-1">Semester</label>
+                    <select
+                      value={newPaperSem}
+                      onChange={(e) => setNewPaperSem(Number(e.target.value))}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                    >
+                      <option value={1}>Semester 1</option>
+                      <option value={2}>Semester 2</option>
+                      <option value={3}>Semester 3</option>
+                      <option value={4}>Semester 4</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-gray-600 font-bold mb-1">Academic Year</label>
+                    <select
+                      value={newPaperYear}
+                      onChange={(e) => setNewPaperYear(e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                    >
+                      <option value="2026-2027">2026 - 2027</option>
+                      <option value="2025-2026">2025 - 2026</option>
+                      <option value="2024-2025">2024 - 2025</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-gray-600 font-bold mb-1">PDF File Name / URL</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. MCA_101_AOS_2026.pdf"
+                    value={newPaperFileName}
+                    onChange={(e) => setNewPaperFileName(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                  />
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-gray-100">
+                  <button
+                    type="button"
+                    onClick={() => setIsAddPaperModalOpen(false)}
+                    className="px-3 py-1.5 font-bold text-gray-500 hover:bg-gray-100 rounded-lg"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-4 py-1.5 font-bold bg-[#173D72] hover:bg-blue-900 text-white rounded-lg"
+                  >
+                    Add Question Paper
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ==========================================
+  // TAB 9: STUDENT SUPPORT TICKETS
+  // ==========================================
+  if (activeTab === 'support-tickets') {
+    const allTickets = dataService.getSupportRequests();
+
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-xl font-bold text-[#173D72]">Student Support & Help Requests</h1>
+          <p className="text-xs text-gray-500 mt-1">
+            Incoming help tickets submitted by students from the mobile app "I Need Help" tab
+          </p>
+        </div>
+
+        <div className="space-y-3.5">
+          {allTickets.length === 0 ? (
+            <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-xs text-gray-400">
+              No support requests submitted yet.
+            </div>
+          ) : (
+            allTickets.map((ticket) => (
+              <div key={ticket.requestId} className="bg-white rounded-xl border border-gray-200 p-5 shadow-xs">
+                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 mb-2">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold uppercase bg-blue-50 text-[#173D72] px-2 py-0.5 rounded border border-blue-100">
+                        {ticket.category}
+                      </span>
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                          ticket.status === 'RESOLVED'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : ticket.status === 'IN_PROGRESS'
+                            ? 'bg-amber-100 text-amber-800'
+                            : 'bg-gray-100 text-gray-700'
+                        }`}
+                      >
+                        {ticket.status}
+                      </span>
+                    </div>
+                    <h3 className="text-sm font-bold text-[#202938] mt-1.5">{ticket.subject}</h3>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      From: <strong>{ticket.studentName}</strong> ({ticket.studentEmail})
+                    </div>
+                  </div>
+
+                  <span className="text-[11px] text-gray-400 font-mono">
+                    {new Date(ticket.createdAt).toLocaleString([], {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </span>
+                </div>
+
+                <div className="p-3 bg-[#F5F7FA] rounded-lg border border-gray-100 text-xs text-gray-700 mt-2">
+                  {ticket.message}
+                </div>
+
+                {ticket.adminResponse && (
+                  <div className="mt-3 p-3 bg-emerald-50/60 rounded-lg border border-emerald-200 text-xs">
+                    <span className="font-bold text-emerald-900">Official College Response:</span>
+                    <p className="text-emerald-800 mt-0.5">{ticket.adminResponse}</p>
+                  </div>
+                )}
+
+                <div className="mt-3 pt-2.5 border-t border-gray-100 flex justify-end">
+                  <button
+                    onClick={() => {
+                      setReplyingTicketId(ticket.requestId);
+                      setTicketReplyText(ticket.adminResponse || '');
+                    }}
+                    className="text-xs font-bold text-[#173D72] hover:underline"
+                  >
+                    {ticket.adminResponse ? 'Update Response' : 'Reply & Resolve'} →
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Modal: Reply Ticket */}
+        {replyingTicketId && (
+          <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-xl border border-gray-200">
+              <h3 className="text-base font-bold text-[#173D72] mb-3">Respond to Student Ticket</h3>
+              <div className="space-y-3 text-xs">
+                <div>
+                  <label className="block text-gray-600 font-bold mb-1">Update Status</label>
+                  <select
+                    value={ticketReplyStatus}
+                    onChange={(e) => setTicketReplyStatus(e.target.value as any)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                  >
+                    <option value="RESOLVED">Resolved</option>
+                    <option value="IN_PROGRESS">In Progress</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-gray-600 font-bold mb-1">College Resolution Response</label>
+                  <textarea
+                    rows={4}
+                    required
+                    placeholder="Enter official resolution or instructions for the student..."
+                    value={ticketReplyText}
+                    onChange={(e) => setTicketReplyText(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-[#173D72] focus:outline-none"
+                  />
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-gray-100">
+                  <button
+                    type="button"
+                    onClick={() => setReplyingTicketId(null)}
+                    className="px-3 py-1.5 font-bold text-gray-500 hover:bg-gray-100 rounded-lg"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    onClick={() => handleReplySupportTicket(replyingTicketId)}
+                    className="px-4 py-1.5 font-bold bg-[#173D72] hover:bg-blue-900 text-white rounded-lg"
+                  >
+                    Send Response
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ==========================================
   // DEFAULT TAB: OVERVIEW
   // ==========================================
   return (
@@ -1268,10 +1929,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab }) => 
 
         <div className="flex items-center gap-2">
           <button
-            onClick={handlePublishTimetable}
+            onClick={() => handleSaveTimetableAndNotify(false)}
             className="px-3.5 py-2 text-xs font-bold bg-[#173D72] hover:bg-blue-900 text-white rounded-lg flex items-center gap-1.5 shadow-2xs"
           >
-            <UploadCloud className="w-3.5 h-3.5" /> Publish Timetable
+            <UploadCloud className="w-3.5 h-3.5" /> SAVE TIMETABLE & NOTIFY USERS
           </button>
         </div>
       </div>
@@ -1279,19 +1940,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab }) => 
       {/* Metric Cards Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-4 gap-3.5">
         {/* Total Students */}
-        <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-xs">
+        <div
+          onClick={() => navigateTo('preloaded-students')}
+          className="bg-white rounded-xl border border-gray-200 p-4 shadow-xs hover:border-[#173D72] cursor-pointer transition-all"
+        >
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-gray-500 uppercase">Total Students</span>
+            <span className="text-xs font-bold text-gray-500 uppercase">Preloaded Students</span>
             <div className="p-2 bg-emerald-50 text-emerald-700 rounded-lg">
               <GraduationCap className="w-4 h-4" />
             </div>
           </div>
           <div className="text-2xl font-black text-[#173D72] mt-2">{students.length}</div>
-          <span className="text-[11px] text-gray-500">Active enrollments</span>
+          <span className="text-[11px] text-gray-500">Manage eligible USNs →</span>
         </div>
 
         {/* Total Professors */}
-        <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-xs">
+        <div
+          onClick={() => navigateTo('users')}
+          className="bg-white rounded-xl border border-gray-200 p-4 shadow-xs hover:border-[#173D72] cursor-pointer transition-all"
+        >
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-gray-500 uppercase">Professors</span>
             <div className="p-2 bg-blue-50 text-[#173D72] rounded-lg">
@@ -1299,11 +1966,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab }) => 
             </div>
           </div>
           <div className="text-2xl font-black text-[#173D72] mt-2">{professors.length}</div>
-          <span className="text-[11px] text-gray-500">Across 4 departments</span>
+          <span className="text-[11px] text-gray-500">Across 4 departments →</span>
         </div>
 
         {/* Subjects & Departments */}
-        <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-xs">
+        <div
+          onClick={() => navigateTo('subjects')}
+          className="bg-white rounded-xl border border-gray-200 p-4 shadow-xs hover:border-[#173D72] cursor-pointer transition-all"
+        >
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-gray-500 uppercase">Subjects</span>
             <div className="p-2 bg-indigo-50 text-indigo-700 rounded-lg">
@@ -1311,11 +1981,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab }) => 
             </div>
           </div>
           <div className="text-2xl font-black text-[#173D72] mt-2">{subjects.length}</div>
-          <span className="text-[11px] text-gray-500">{departments.length} departments</span>
+          <span className="text-[11px] text-gray-500">{departments.length} departments →</span>
         </div>
 
         {/* Today's Classes */}
-        <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-xs">
+        <div
+          onClick={() => navigateTo('timetable')}
+          className="bg-white rounded-xl border border-gray-200 p-4 shadow-xs hover:border-[#173D72] cursor-pointer transition-all"
+        >
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-gray-500 uppercase">Today's Sessions</span>
             <div className="p-2 bg-amber-50 text-amber-700 rounded-lg">
@@ -1323,7 +1996,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab }) => 
             </div>
           </div>
           <div className="text-2xl font-black text-[#173D72] mt-2">{todaySessions.length}</div>
-          <span className="text-[11px] text-gray-500">Monday, Nov 2</span>
+          <span className="text-[11px] text-gray-500">View timetable matrix →</span>
         </div>
       </div>
 
@@ -1383,6 +2056,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ activeTab }) => 
           </div>
         </div>
       </div>
+
+      {/* Conflict Detection Modal */}
+      {showConflictModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-xl border border-gray-200">
+            <div className="flex items-center gap-2 text-amber-600 mb-3">
+              <AlertTriangle className="w-6 h-6 shrink-0" />
+              <h3 className="text-base font-bold text-gray-900">Timetable Scheduling Conflicts</h3>
+            </div>
+            <p className="text-xs text-gray-600 mb-3">
+              The following scheduling overlaps or room conflicts were detected in this timetable version:
+            </p>
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2 mb-4">
+              {conflictWarnings.map((warn, idx) => (
+                <div key={idx} className="text-xs text-amber-900 flex items-start gap-1.5">
+                  <span className="font-bold">•</span>
+                  <span>{warn}</span>
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center justify-end gap-2 text-xs">
+              <button
+                onClick={() => setShowConflictModal(false)}
+                className="px-3.5 py-2 font-bold text-gray-600 hover:bg-gray-100 rounded-lg"
+              >
+                Go Back & Fix
+              </button>
+              <button
+                onClick={() => handleSaveTimetableAndNotify(true)}
+                className="px-3.5 py-2 font-bold bg-[#173D72] hover:bg-blue-900 text-white rounded-lg"
+              >
+                Override & Save Timetable
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
